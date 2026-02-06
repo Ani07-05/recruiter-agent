@@ -36,56 +36,69 @@ export function useVoiceCall({
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const signalingWsRef = useRef<WebSocket | null>(null);
   const deepgramWsRef = useRef<WebSocket | null>(null);
+  const remoteDeepgramWsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const remoteAudioContextRef = useRef<AudioContext | null>(null);
+  const remoteProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const pendingIceCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
   const remoteDescriptionSetRef = useRef<boolean>(false);
   const signalingQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const onTranscriptRef = useRef(onTranscript);
+  const roleRef = useRef(role);
+  const deepgramApiKeyRef = useRef(deepgramApiKey);
+  const isMutedRef = useRef(isMuted);
+
+  // Keep refs in sync so closures inside createPeerConnection/ontrack stay current
+  onTranscriptRef.current = onTranscript;
+  roleRef.current = role;
+  deepgramApiKeyRef.current = deepgramApiKey;
+  isMutedRef.current = isMuted;
 
   const connectToDeepgram = useCallback(async () => {
-    if (!deepgramApiKey) {
+    const apiKey = deepgramApiKeyRef.current;
+    if (!apiKey) {
       console.warn("No Deepgram API key provided");
       return;
     }
 
-    console.log("Connecting to Deepgram with key:", deepgramApiKey.substring(0, 10) + "...");
+    console.log("Connecting to Deepgram with key:", apiKey.substring(0, 10) + "...");
 
     try {
       const ws = new WebSocket(
         `wss://api.deepgram.com/v1/listen?model=nova-2&punctuate=true&diarize=true&interim_results=true`,
-        ["token", deepgramApiKey]
+        ["token", apiKey]
       );
 
       ws.onopen = () => {
-        console.log("Connected to Deepgram");
+        console.log("Connected to Deepgram (local)");
       };
 
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          console.log("Deepgram message:", data);
           if (data.channel?.alternatives?.[0]?.transcript) {
             const transcript = data.channel.alternatives[0].transcript;
             const isFinal = data.is_final;
             if (transcript) {
-              // Split into words for animation
+              const currentRole = roleRef.current;
               const words = transcript.split(' ').map((word: string, idx: number) => ({
                 word,
                 startTime: Date.now() + (idx * 50),
                 isInterim: !isFinal,
               }));
-              
+
               const line: TranscriptLine = {
-                id: `${role}-${Date.now()}-${Math.random()}`,
-                speaker: role,
+                id: `${currentRole}-${Date.now()}-${Math.random()}`,
+                speaker: currentRole,
                 words,
                 text: transcript,
                 timestamp: Date.now(),
                 isFinal,
               };
-              
-              onTranscript(line);
+
+              onTranscriptRef.current(line);
             }
           }
         } catch (e) {
@@ -105,20 +118,19 @@ export function useVoiceCall({
     } catch (e) {
       console.error("Failed to connect to Deepgram:", e);
     }
-  }, [deepgramApiKey, onTranscript, role]);
+  }, []);
 
   const startAudioProcessing = useCallback((stream: MediaStream) => {
     if (!deepgramWsRef.current) return;
 
-    // Clone the stream for transcription processing to avoid interference with WebRTC
     const clonedStream = stream.clone();
-    
+
     const audioContext = new AudioContext({ sampleRate: 16000 });
     const source = audioContext.createMediaStreamSource(clonedStream);
     const processor = audioContext.createScriptProcessor(4096, 1, 1);
 
     processor.onaudioprocess = (e) => {
-      if (deepgramWsRef.current?.readyState === WebSocket.OPEN && !isMuted) {
+      if (deepgramWsRef.current?.readyState === WebSocket.OPEN && !isMutedRef.current) {
         const inputData = e.inputBuffer.getChannelData(0);
         const pcmData = new Int16Array(inputData.length);
         for (let i = 0; i < inputData.length; i++) {
@@ -129,15 +141,93 @@ export function useVoiceCall({
     };
 
     source.connect(processor);
-    // Connect to a dummy destination to keep processor running without audio feedback
     const gainNode = audioContext.createGain();
-    gainNode.gain.value = 0; // Mute the output
+    gainNode.gain.value = 0;
     processor.connect(gainNode);
     gainNode.connect(audioContext.destination);
 
     audioContextRef.current = audioContext;
     processorRef.current = processor;
-  }, [isMuted]);
+  }, []);
+
+  const startRemoteAudioTranscription = useCallback((stream: MediaStream) => {
+    const apiKey = deepgramApiKeyRef.current;
+    if (!apiKey) {
+      console.warn("No Deepgram API key for remote audio transcription");
+      return;
+    }
+
+    console.log("Starting remote audio transcription");
+    const remoteRole = roleRef.current === "recruiter" ? "hiring_manager" : "recruiter";
+
+    const ws = new WebSocket(
+      `wss://api.deepgram.com/v1/listen?model=nova-2&punctuate=true&diarize=true&interim_results=true`,
+      ["token", apiKey]
+    );
+
+    ws.onopen = () => {
+      console.log("Connected to Deepgram for remote audio");
+
+      const audioContext = new AudioContext({ sampleRate: 16000 });
+      const source = audioContext.createMediaStreamSource(stream);
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+      processor.onaudioprocess = (e) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          const inputData = e.inputBuffer.getChannelData(0);
+          const pcmData = new Int16Array(inputData.length);
+          for (let i = 0; i < inputData.length; i++) {
+            pcmData[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
+          }
+          ws.send(pcmData.buffer);
+        }
+      };
+
+      source.connect(processor);
+      const gainNode = audioContext.createGain();
+      gainNode.gain.value = 0;
+      processor.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+
+      remoteAudioContextRef.current = audioContext;
+      remoteProcessorRef.current = processor;
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.channel?.alternatives?.[0]?.transcript) {
+          const transcript = data.channel.alternatives[0].transcript;
+          const isFinal = data.is_final;
+          if (transcript) {
+            const words = transcript.split(' ').map((word: string, idx: number) => ({
+              word,
+              startTime: Date.now() + (idx * 50),
+              isInterim: !isFinal,
+            }));
+
+            const line: TranscriptLine = {
+              id: `${remoteRole}-${Date.now()}-${Math.random()}`,
+              speaker: remoteRole as ParticipantRole,
+              words,
+              text: transcript,
+              timestamp: Date.now(),
+              isFinal,
+            };
+
+            onTranscriptRef.current(line);
+          }
+        }
+      } catch (e) {
+        console.error("Error parsing remote Deepgram message:", e);
+      }
+    };
+
+    ws.onerror = (e) => console.error("Remote Deepgram error:", e);
+    ws.onclose = (event) => console.log("Remote Deepgram closed:", event.code, event.reason);
+
+    remoteDeepgramWsRef.current = ws;
+  }, []);
 
   const startCall = useCallback(async () => {
     setCallState("connecting");
@@ -383,25 +473,16 @@ export function useVoiceCall({
       remoteAudioRef.current.play()
         .then(() => {
           console.log("Remote audio playing successfully");
-          // Double check audio is really playing
-          setTimeout(() => {
-            if (remoteAudioRef.current) {
-              console.log("Audio element status after 1s:", {
-                paused: remoteAudioRef.current.paused,
-                currentTime: remoteAudioRef.current.currentTime,
-                volume: remoteAudioRef.current.volume,
-              });
-            }
-          }, 1000);
         })
         .catch((err) => {
           console.error("Failed to play remote audio:", err);
-          // Try again after user interaction
           document.addEventListener('click', () => {
-            console.log("Attempting to play remote audio after user interaction");
             remoteAudioRef.current?.play().catch(console.error);
           }, { once: true });
         });
+
+      // Transcribe remote audio
+      startRemoteAudioTranscription(stream);
     };
 
     if (localStreamRef.current) {
@@ -413,7 +494,7 @@ export function useVoiceCall({
 
     peerConnectionRef.current = pc;
     return pc;
-  }, []);
+  }, [startRemoteAudioTranscription]);
 
   const createOffer = useCallback(async (ws: WebSocket) => {
     console.log("Creating peer connection and offer");
@@ -477,13 +558,17 @@ export function useVoiceCall({
   }, []);
 
   const endCall = useCallback(() => {
-    // Close Deepgram connection
+    // Close Deepgram connections
     if (deepgramWsRef.current) {
       deepgramWsRef.current.close();
       deepgramWsRef.current = null;
     }
+    if (remoteDeepgramWsRef.current) {
+      remoteDeepgramWsRef.current.close();
+      remoteDeepgramWsRef.current = null;
+    }
 
-    // Close audio processing
+    // Close audio processing (local)
     if (processorRef.current) {
       processorRef.current.disconnect();
       processorRef.current = null;
@@ -491,6 +576,16 @@ export function useVoiceCall({
     if (audioContextRef.current) {
       audioContextRef.current.close();
       audioContextRef.current = null;
+    }
+
+    // Close audio processing (remote)
+    if (remoteProcessorRef.current) {
+      remoteProcessorRef.current.disconnect();
+      remoteProcessorRef.current = null;
+    }
+    if (remoteAudioContextRef.current) {
+      remoteAudioContextRef.current.close();
+      remoteAudioContextRef.current = null;
     }
 
     // Stop and cleanup remote audio
