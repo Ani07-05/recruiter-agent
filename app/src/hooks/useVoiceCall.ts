@@ -37,6 +37,7 @@ export function useVoiceCall({
   const deepgramWsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const connectToDeepgram = useCallback(async () => {
     if (!deepgramApiKey) {
@@ -218,20 +219,45 @@ export function useVoiceCall({
 
     pc.onicecandidate = (event) => {
       if (event.candidate && signalingWsRef.current?.readyState === WebSocket.OPEN) {
+        console.log("Sending ICE candidate");
         signalingWsRef.current.send(
           JSON.stringify({ type: "ice_candidate", candidate: event.candidate })
         );
       }
     };
 
+    pc.oniceconnectionstatechange = () => {
+      console.log("ICE connection state:", pc.iceConnectionState);
+    };
+
+    pc.onconnectionstatechange = () => {
+      console.log("Connection state:", pc.connectionState);
+    };
+
     pc.ontrack = (event) => {
-      const audio = new Audio();
-      audio.srcObject = event.streams[0];
-      audio.play();
+      console.log("Received remote track:", event.track.kind);
+      
+      // Create or reuse audio element
+      if (!remoteAudioRef.current) {
+        remoteAudioRef.current = new Audio();
+        remoteAudioRef.current.autoplay = true;
+      }
+      
+      remoteAudioRef.current.srcObject = event.streams[0];
+      
+      // Handle autoplay promise
+      remoteAudioRef.current.play().catch((err) => {
+        console.error("Failed to play remote audio:", err);
+        // Try again after user interaction
+        document.addEventListener('click', () => {
+          remoteAudioRef.current?.play().catch(console.error);
+        }, { once: true });
+      });
     };
 
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => {
+        console.log("Adding local track:", track.kind, track.enabled);
         pc.addTrack(track, localStreamRef.current!);
       });
     }
@@ -282,6 +308,13 @@ export function useVoiceCall({
     if (audioContextRef.current) {
       audioContextRef.current.close();
       audioContextRef.current = null;
+    }
+
+    // Stop and cleanup remote audio
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.pause();
+      remoteAudioRef.current.srcObject = null;
+      remoteAudioRef.current = null;
     }
 
     // Close peer connection
