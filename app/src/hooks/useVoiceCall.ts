@@ -193,33 +193,41 @@ export function useVoiceCall({
 
       ws.onmessage = async (event) => {
         const message = JSON.parse(event.data);
+        console.log("Signaling message received:", message.type);
 
         switch (message.type) {
           case "peer_joined":
+            console.log("Peer joined, setting remote connected");
             setIsRemoteConnected(true);
             // If we're the recruiter, create offer
             if (role === "recruiter") {
+              console.log("Creating offer as recruiter");
               await createOffer(ws);
             }
             break;
 
           case "peer_left":
+            console.log("Peer left");
             setIsRemoteConnected(false);
             break;
 
           case "offer":
+            console.log("Received offer, creating answer");
             await handleOffer(ws, message.sdp);
             break;
 
           case "answer":
+            console.log("Received answer, setting remote description");
             await handleAnswer(message.sdp);
             break;
 
           case "ice_candidate":
+            console.log("Received ICE candidate");
             await handleIceCandidate(message.candidate);
             break;
 
           case "error":
+            console.error("Signaling error:", message.message);
             setError(message.message);
             break;
         }
@@ -249,21 +257,25 @@ export function useVoiceCall({
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
         { urls: "stun:stun2.l.google.com:19302" },
-        { urls: "stun:stun3.l.google.com:19302" },
-        { urls: "stun:stun4.l.google.com:19302" },
-        // Public TURN servers as fallback
+        // Twilio's free TURN servers
         {
-          urls: "turn:openrelay.metered.ca:80",
-          username: "openrelayproject",
-          credential: "openrelayproject",
+          urls: "turn:global.turn.twilio.com:3478?transport=udp",
+          username: "f4b4035eaa76f4a55de5f4351567653ee4ff6fa97b50b6b334fcc1be9c27212d",
+          credential: "w1uxM55V9yVoqyVFjt+mxDBV0F87AUCemaYVQGxsPLw=",
         },
         {
-          urls: "turn:openrelay.metered.ca:443",
-          username: "openrelayproject",
-          credential: "openrelayproject",
+          urls: "turn:global.turn.twilio.com:3478?transport=tcp",
+          username: "f4b4035eaa76f4a55de5f4351567653ee4ff6fa97b50b6b334fcc1be9c27212d",
+          credential: "w1uxM55V9yVoqyVFjt+mxDBV0F87AUCemaYVQGxsPLw=",
+        },
+        {
+          urls: "turn:global.turn.twilio.com:443?transport=tcp",
+          username: "f4b4035eaa76f4a55de5f4351567653ee4ff6fa97b50b6b334fcc1be9c27212d",
+          credential: "w1uxM55V9yVoqyVFjt+mxDBV0F87AUCemaYVQGxsPLw=",
         },
       ],
       iceCandidatePoolSize: 10,
+      iceTransportPolicy: 'all', // Try all candidate types
     });
 
     pc.onicecandidate = (event) => {
@@ -350,29 +362,41 @@ export function useVoiceCall({
   }, []);
 
   const createOffer = useCallback(async (ws: WebSocket) => {
+    console.log("Creating peer connection and offer");
     const pc = createPeerConnection();
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
+    console.log("Sending offer to peer");
     ws.send(JSON.stringify({ type: "offer", sdp: offer }));
   }, [createPeerConnection]);
 
   const handleOffer = useCallback(async (ws: WebSocket, sdp: RTCSessionDescriptionInit) => {
+    console.log("Handling offer, creating peer connection");
     const pc = createPeerConnection();
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
+    console.log("Sending answer to peer");
     ws.send(JSON.stringify({ type: "answer", sdp: answer }));
   }, [createPeerConnection]);
 
   const handleAnswer = useCallback(async (sdp: RTCSessionDescriptionInit) => {
+    console.log("Setting remote description from answer");
     if (peerConnectionRef.current) {
       await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(sdp));
+      console.log("Remote description set successfully");
+    } else {
+      console.error("No peer connection available to set answer");
     }
   }, []);
 
   const handleIceCandidate = useCallback(async (candidate: RTCIceCandidateInit) => {
+    console.log("Adding ICE candidate from remote peer");
     if (peerConnectionRef.current) {
       await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+      console.log("ICE candidate added successfully");
+    } else {
+      console.error("No peer connection available to add ICE candidate");
     }
   }, []);
 
