@@ -256,30 +256,26 @@ export function useVoiceCall({
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
-        // Metered TURN servers (free tier)
+        // Multiple TURN server options for maximum compatibility
         {
-          urls: "turn:a.relay.metered.ca:80",
-          username: "87e89ea6d2d873b487ad",
-          credential: "yNhFF7zWwfK3AWHz",
+          urls: "turn:openrelay.metered.ca:80",
+          username: "openrelayproject",
+          credential: "openrelayproject",
         },
         {
-          urls: "turn:a.relay.metered.ca:80?transport=tcp",
-          username: "87e89ea6d2d873b487ad",
-          credential: "yNhFF7zWwfK3AWHz",
+          urls: "turn:openrelay.metered.ca:443",
+          username: "openrelayproject",
+          credential: "openrelayproject",
         },
         {
-          urls: "turn:a.relay.metered.ca:443",
-          username: "87e89ea6d2d873b487ad",
-          credential: "yNhFF7zWwfK3AWHz",
-        },
-        {
-          urls: "turns:a.relay.metered.ca:443?transport=tcp",
-          username: "87e89ea6d2d873b487ad",
-          credential: "yNhFF7zWwfK3AWHz",
+          urls: "turn:openrelay.metered.ca:443?transport=tcp",
+          username: "openrelayproject",
+          credential: "openrelayproject",
         },
       ],
       iceCandidatePoolSize: 10,
-      iceTransportPolicy: 'all',
+      bundlePolicy: 'max-bundle',
+      rtcpMuxPolicy: 'require',
     });
 
     pc.onicecandidate = (event) => {
@@ -322,6 +318,24 @@ export function useVoiceCall({
     pc.ontrack = (event) => {
       console.log("Received remote track:", event.track.kind, event.track.enabled, "readyState:", event.track.readyState);
       
+      const stream = event.streams[0];
+      console.log("Remote stream info:", {
+        id: stream.id,
+        active: stream.active,
+        audioTracks: stream.getAudioTracks().length,
+      });
+      
+      // Log audio track details
+      stream.getAudioTracks().forEach((track, idx) => {
+        console.log(`Remote audio track ${idx}:`, {
+          id: track.id,
+          label: track.label,
+          enabled: track.enabled,
+          muted: track.muted,
+          readyState: track.readyState,
+        });
+      });
+      
       // Create or reuse audio element and attach to DOM
       if (!remoteAudioRef.current) {
         remoteAudioRef.current = new Audio();
@@ -334,7 +348,7 @@ export function useVoiceCall({
         console.log("Audio element attached to DOM");
       }
       
-      remoteAudioRef.current.srcObject = event.streams[0];
+      remoteAudioRef.current.srcObject = stream;
       
       console.log("Remote audio element setup:", {
         srcObject: remoteAudioRef.current.srcObject,
@@ -343,10 +357,20 @@ export function useVoiceCall({
         paused: remoteAudioRef.current.paused,
       });
       
-      // Handle autoplay promise
+      // Force play
       remoteAudioRef.current.play()
         .then(() => {
           console.log("Remote audio playing successfully");
+          // Double check audio is really playing
+          setTimeout(() => {
+            if (remoteAudioRef.current) {
+              console.log("Audio element status after 1s:", {
+                paused: remoteAudioRef.current.paused,
+                currentTime: remoteAudioRef.current.currentTime,
+                volume: remoteAudioRef.current.volume,
+              });
+            }
+          }, 1000);
         })
         .catch((err) => {
           console.error("Failed to play remote audio:", err);
