@@ -45,6 +45,8 @@ export function useVoiceCall({
       return;
     }
 
+    console.log("Connecting to Deepgram with key:", deepgramApiKey.substring(0, 10) + "...");
+
     try {
       const ws = new WebSocket(
         `wss://api.deepgram.com/v1/listen?model=nova-2&punctuate=true&diarize=true&interim_results=true`,
@@ -58,6 +60,7 @@ export function useVoiceCall({
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
+          console.log("Deepgram message:", data);
           if (data.channel?.alternatives?.[0]?.transcript) {
             const transcript = data.channel.alternatives[0].transcript;
             const isFinal = data.is_final;
@@ -74,8 +77,8 @@ export function useVoiceCall({
         console.error("Deepgram error:", e);
       };
 
-      ws.onclose = () => {
-        console.log("Deepgram connection closed");
+      ws.onclose = (event) => {
+        console.log("Deepgram connection closed:", event.code, event.reason);
       };
 
       deepgramWsRef.current = ws;
@@ -129,6 +132,12 @@ export function useVoiceCall({
         video: false,
       });
       localStreamRef.current = stream;
+      
+      // Ensure audio track is enabled
+      stream.getAudioTracks().forEach(track => {
+        track.enabled = true;
+        console.log("Local audio track:", track.label, "enabled:", track.enabled);
+      });
 
       // Connect to Deepgram for transcription
       await connectToDeepgram();
