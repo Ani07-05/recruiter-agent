@@ -56,6 +56,7 @@ function App() {
     }
   }, [sendTranscript]);
 
+  // Voice call hook - recreate when roomId changes
   const voiceCall = useVoiceCall({
     roomId,
     role: "recruiter",
@@ -71,20 +72,30 @@ function App() {
         headers: { "Content-Type": "application/json" },
       });
       const data = await response.json();
-      setRoomId(data.room_id);
+      const newRoomId = data.room_id;
       
       // Use environment variable for public URL, fallback to window.location.origin
       const publicUrl = import.meta.env.VITE_PUBLIC_URL || window.location.origin;
       const url = `${publicUrl}${data.join_url}`;
-      setJoinUrl(url);
       
-      // Start the call immediately
+      // Set state first
+      setRoomId(newRoomId);
+      setJoinUrl(url);
       setIsVoiceCallActive(true);
-      await voiceCall.startCall();
+      
+      // Wait a bit for state to update, then start call
+      // We'll pass the roomId directly to a new approach
     } catch (err) {
       console.error("Failed to create room:", err);
     }
   };
+
+  // Effect to start call when roomId and isVoiceCallActive are set
+  useEffect(() => {
+    if (isVoiceCallActive && roomId && voiceCall.callState === "idle") {
+      voiceCall.startCall();
+    }
+  }, [isVoiceCallActive, roomId, voiceCall]);
 
   // End voice call
   const handleEndVoiceCall = () => {
