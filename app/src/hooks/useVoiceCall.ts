@@ -56,23 +56,25 @@ export function useVoiceCall({
   deepgramApiKeyRef.current = deepgramApiKey;
   isMutedRef.current = isMuted;
 
-  const connectToDeepgram = useCallback(async () => {
+  const connectToDeepgram = useCallback((): Promise<WebSocket> => {
     const apiKey = deepgramApiKeyRef.current;
     if (!apiKey) {
-      console.warn("No Deepgram API key provided");
-      return;
+      console.error("[Transcript] No Deepgram API key — check /api/config response");
+      return Promise.reject(new Error("No Deepgram API key"));
     }
 
-    console.log("Connecting to Deepgram with key:", apiKey.substring(0, 10) + "...");
+    console.log("[Transcript] Connecting to Deepgram with key:", apiKey.substring(0, 8) + "...");
 
-    try {
+    return new Promise((resolve, reject) => {
       const ws = new WebSocket(
-        `wss://api.deepgram.com/v1/listen?model=nova-2&punctuate=true&diarize=true&interim_results=true`,
+        `wss://api.deepgram.com/v1/listen?model=nova-2&punctuate=true&interim_results=true&encoding=linear16&sample_rate=16000`,
         ["token", apiKey]
       );
 
       ws.onopen = () => {
-        console.log("Connected to Deepgram (local)");
+        console.log("[Transcript] Deepgram local connected");
+        deepgramWsRef.current = ws;
+        resolve(ws);
       };
 
       ws.onmessage = (event) => {
@@ -102,30 +104,36 @@ export function useVoiceCall({
             }
           }
         } catch (e) {
-          console.error("Error parsing Deepgram message:", e);
+          console.error("[Transcript] Error parsing Deepgram message:", e);
         }
       };
 
       ws.onerror = (e) => {
-        console.error("Deepgram error:", e);
+        console.error("[Transcript] Deepgram WebSocket error:", e);
+        reject(e);
       };
 
       ws.onclose = (event) => {
-        console.log("Deepgram connection closed:", event.code, event.reason);
+        console.log("[Transcript] Deepgram local closed:", event.code, event.reason);
       };
-
-      deepgramWsRef.current = ws;
-    } catch (e) {
-      console.error("Failed to connect to Deepgram:", e);
-    }
+    });
   }, []);
 
-  const startAudioProcessing = useCallback((stream: MediaStream) => {
-    if (!deepgramWsRef.current) return;
+  const startAudioProcessing = useCallback(async (stream: MediaStream) => {
+    if (!deepgramWsRef.current) {
+      console.error("[Transcript] Cannot start audio processing — no Deepgram connection");
+      return;
+    }
 
     const clonedStream = stream.clone();
 
     const audioContext = new AudioContext({ sampleRate: 16000 });
+    // Chrome suspends AudioContext unless created during user gesture — must resume
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
+    }
+    console.log("[Transcript] Local AudioContext state:", audioContext.state);
+
     const source = audioContext.createMediaStreamSource(clonedStream);
     const processor = audioContext.createScriptProcessor(4096, 1, 1);
 
@@ -148,29 +156,36 @@ export function useVoiceCall({
 
     audioContextRef.current = audioContext;
     processorRef.current = processor;
+    console.log("[Transcript] Local audio processing started");
   }, []);
 
-  const startRemoteAudioTranscription = useCallback((stream: MediaStream) => {
+  const startRemoteAudioTranscription = useCallback(async (stream: MediaStream) => {
     const apiKey = deepgramApiKeyRef.current;
     if (!apiKey) {
-      console.warn("No Deepgram API key for remote audio transcription");
+      console.error("[Transcript] No Deepgram API key for remote audio");
       return;
     }
 
-    console.log("Starting remote audio transcription");
     const remoteRole = roleRef.current === "recruiter" ? "hiring_manager" : "recruiter";
+    console.log("[Transcript] Starting remote audio transcription as:", remoteRole);
+
+    // Create AudioContext first and resume it (must happen before WS connects)
+    const audioContext = new AudioContext({ sampleRate: 16000 });
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
+    }
+    console.log("[Transcript] Remote AudioContext state:", audioContext.state);
+
+    const source = audioContext.createMediaStreamSource(stream);
+    const processor = audioContext.createScriptProcessor(4096, 1, 1);
 
     const ws = new WebSocket(
-      `wss://api.deepgram.com/v1/listen?model=nova-2&punctuate=true&diarize=true&interim_results=true`,
+      `wss://api.deepgram.com/v1/listen?model=nova-2&punctuate=true&interim_results=true&encoding=linear16&sample_rate=16000`,
       ["token", apiKey]
     );
 
     ws.onopen = () => {
-      console.log("Connected to Deepgram for remote audio");
-
-      const audioContext = new AudioContext({ sampleRate: 16000 });
-      const source = audioContext.createMediaStreamSource(stream);
-      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+      console.log("[Transcript] Deepgram remote connected");
 
       processor.onaudioprocess = (e) => {
         if (ws.readyState === WebSocket.OPEN) {
@@ -191,6 +206,7 @@ export function useVoiceCall({
 
       remoteAudioContextRef.current = audioContext;
       remoteProcessorRef.current = processor;
+      console.log("[Transcript] Remote audio processing started");
     };
 
     ws.onmessage = (event) => {
@@ -219,12 +235,12 @@ export function useVoiceCall({
           }
         }
       } catch (e) {
-        console.error("Error parsing remote Deepgram message:", e);
+        console.error("[Transcript] Error parsing remote Deepgram message:", e);
       }
     };
 
-    ws.onerror = (e) => console.error("Remote Deepgram error:", e);
-    ws.onclose = (event) => console.log("Remote Deepgram closed:", event.code, event.reason);
+    ws.onerror = (e) => console.error("[Transcript] Remote Deepgram error:", e);
+    ws.onclose = (event) => console.log("[Transcript] Remote Deepgram closed:", event.code, event.reason);
 
     remoteDeepgramWsRef.current = ws;
   }, []);
@@ -257,11 +273,10 @@ export function useVoiceCall({
         console.log("Local audio track:", track.label, "enabled:", track.enabled);
       });
 
-      // Connect to Deepgram for transcription
-      await connectToDeepgram();
-
-      // Start audio processing for transcription
-      setTimeout(() => startAudioProcessing(stream), 1000);
+      // Connect to Deepgram for transcription, then start processing
+      connectToDeepgram()
+        .then(() => startAudioProcessing(stream))
+        .catch((e) => console.error("[Transcript] Deepgram setup failed:", e));
 
       // Connect to signaling server
       // If VITE_API_URL is set (ngrok), use it directly
