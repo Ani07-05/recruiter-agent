@@ -123,7 +123,11 @@ export function useVoiceCall({
     };
 
     source.connect(processor);
-    processor.connect(audioContext.destination);
+    // Connect to a dummy destination to keep processor running without audio feedback
+    const gainNode = audioContext.createGain();
+    gainNode.gain.value = 0; // Mute the output
+    processor.connect(gainNode);
+    gainNode.connect(audioContext.destination);
 
     audioContextRef.current = audioContext;
     processorRef.current = processor;
