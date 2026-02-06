@@ -256,26 +256,30 @@ export function useVoiceCall({
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
-        { urls: "stun:stun2.l.google.com:19302" },
-        // Twilio's free TURN servers
+        // Metered TURN servers (free tier)
         {
-          urls: "turn:global.turn.twilio.com:3478?transport=udp",
-          username: "f4b4035eaa76f4a55de5f4351567653ee4ff6fa97b50b6b334fcc1be9c27212d",
-          credential: "w1uxM55V9yVoqyVFjt+mxDBV0F87AUCemaYVQGxsPLw=",
+          urls: "turn:a.relay.metered.ca:80",
+          username: "87e89ea6d2d873b487ad",
+          credential: "yNhFF7zWwfK3AWHz",
         },
         {
-          urls: "turn:global.turn.twilio.com:3478?transport=tcp",
-          username: "f4b4035eaa76f4a55de5f4351567653ee4ff6fa97b50b6b334fcc1be9c27212d",
-          credential: "w1uxM55V9yVoqyVFjt+mxDBV0F87AUCemaYVQGxsPLw=",
+          urls: "turn:a.relay.metered.ca:80?transport=tcp",
+          username: "87e89ea6d2d873b487ad",
+          credential: "yNhFF7zWwfK3AWHz",
         },
         {
-          urls: "turn:global.turn.twilio.com:443?transport=tcp",
-          username: "f4b4035eaa76f4a55de5f4351567653ee4ff6fa97b50b6b334fcc1be9c27212d",
-          credential: "w1uxM55V9yVoqyVFjt+mxDBV0F87AUCemaYVQGxsPLw=",
+          urls: "turn:a.relay.metered.ca:443",
+          username: "87e89ea6d2d873b487ad",
+          credential: "yNhFF7zWwfK3AWHz",
+        },
+        {
+          urls: "turns:a.relay.metered.ca:443?transport=tcp",
+          username: "87e89ea6d2d873b487ad",
+          credential: "yNhFF7zWwfK3AWHz",
         },
       ],
       iceCandidatePoolSize: 10,
-      iceTransportPolicy: 'all', // Try all candidate types
+      iceTransportPolicy: 'all',
     });
 
     pc.onicecandidate = (event) => {
@@ -318,12 +322,16 @@ export function useVoiceCall({
     pc.ontrack = (event) => {
       console.log("Received remote track:", event.track.kind, event.track.enabled, "readyState:", event.track.readyState);
       
-      // Create or reuse audio element
+      // Create or reuse audio element and attach to DOM
       if (!remoteAudioRef.current) {
         remoteAudioRef.current = new Audio();
         remoteAudioRef.current.autoplay = true;
-        remoteAudioRef.current.volume = 1.0; // Ensure volume is at max
-        remoteAudioRef.current.muted = false; // Explicitly unmute
+        remoteAudioRef.current.volume = 1.0;
+        remoteAudioRef.current.muted = false;
+        remoteAudioRef.current.id = 'remote-audio-element';
+        // Attach to DOM - some browsers require this
+        document.body.appendChild(remoteAudioRef.current);
+        console.log("Audio element attached to DOM");
       }
       
       remoteAudioRef.current.srcObject = event.streams[0];
@@ -421,6 +429,10 @@ export function useVoiceCall({
     if (remoteAudioRef.current) {
       remoteAudioRef.current.pause();
       remoteAudioRef.current.srcObject = null;
+      // Remove from DOM if attached
+      if (remoteAudioRef.current.parentNode) {
+        remoteAudioRef.current.parentNode.removeChild(remoteAudioRef.current);
+      }
       remoteAudioRef.current = null;
     }
 
