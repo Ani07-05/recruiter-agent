@@ -39,6 +39,9 @@ export function useVoiceCall({
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const pendingIceCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const remoteDescriptionSetRef = useRef<boolean>(false);
+  const signalingQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   const connectToDeepgram = useCallback(async () => {
     if (!deepgramApiKey) {
@@ -191,46 +194,49 @@ export function useVoiceCall({
         ws.send(JSON.stringify({ type: "join", role }));
       };
 
-      ws.onmessage = async (event) => {
+      ws.onmessage = (event) => {
         const message = JSON.parse(event.data);
         console.log("Signaling message received:", message.type);
 
-        switch (message.type) {
-          case "peer_joined":
-            console.log("Peer joined, setting remote connected");
-            setIsRemoteConnected(true);
-            // If we're the recruiter, create offer
-            if (role === "recruiter") {
-              console.log("Creating offer as recruiter");
-              await createOffer(ws);
-            }
-            break;
+        // Serialize message processing to prevent race conditions
+        signalingQueueRef.current = signalingQueueRef.current.then(async () => {
+          switch (message.type) {
+            case "peer_joined":
+              console.log("Peer joined, setting remote connected");
+              setIsRemoteConnected(true);
+              if (role === "recruiter") {
+                console.log("Creating offer as recruiter");
+                await createOffer(ws);
+              }
+              break;
 
-          case "peer_left":
-            console.log("Peer left");
-            setIsRemoteConnected(false);
-            break;
+            case "peer_left":
+              console.log("Peer left");
+              setIsRemoteConnected(false);
+              break;
 
-          case "offer":
-            console.log("Received offer, creating answer");
-            await handleOffer(ws, message.sdp);
-            break;
+            case "offer":
+              console.log("Received offer, creating answer");
+              await handleOffer(ws, message.sdp);
+              break;
 
-          case "answer":
-            console.log("Received answer, setting remote description");
-            await handleAnswer(message.sdp);
-            break;
+            case "answer":
+              console.log("Received answer, setting remote description");
+              await handleAnswer(message.sdp);
+              break;
 
-          case "ice_candidate":
-            console.log("Received ICE candidate");
-            await handleIceCandidate(message.candidate);
-            break;
+            case "ice_candidate":
+              await handleIceCandidate(message.candidate);
+              break;
 
-          case "error":
-            console.error("Signaling error:", message.message);
-            setError(message.message);
-            break;
-        }
+            case "error":
+              console.error("Signaling error:", message.message);
+              setError(message.message);
+              break;
+          }
+        }).catch((e) => {
+          console.error("Error processing signaling message:", e);
+        });
       };
 
       ws.onerror = () => {
@@ -252,42 +258,58 @@ export function useVoiceCall({
   }, [roomId, role, connectToDeepgram, startAudioProcessing]);
 
   const createPeerConnection = useCallback(() => {
+    // For production, use a paid TURN service (e.g., Twilio, Cloudflare Calls, Metered).
+    // STUN-only works when at least one peer has a public IP or cone NAT.
+    // TURN is required when both peers are behind symmetric NAT.
+    const iceServers: RTCIceServer[] = [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+      { urls: "stun:stun.cloudflare.com:3478" },
+    ];
+
+    // Add TURN servers from env if configured (format: url|username|credential)
+    const turnConfig = import.meta.env.VITE_TURN_SERVER_URL;
+    if (turnConfig) {
+      iceServers.push({
+        urls: import.meta.env.VITE_TURN_SERVER_URL,
+        username: import.meta.env.VITE_TURN_SERVER_USERNAME || "",
+        credential: import.meta.env.VITE_TURN_SERVER_CREDENTIAL || "",
+      });
+    } else {
+      // Fallback free TURN servers (unreliable — configure VITE_TURN_SERVER_* for production)
+      iceServers.push(
+        {
+          urls: [
+            "turn:openrelay.metered.ca:80",
+            "turn:openrelay.metered.ca:443",
+            "turn:openrelay.metered.ca:443?transport=tcp",
+          ],
+          username: "openrelayproject",
+          credential: "openrelayproject",
+        },
+      );
+    }
+
     const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: "stun:stun.l.google.com:19302" },
-        { urls: "stun:stun1.l.google.com:19302" },
-        // Multiple TURN server options for maximum compatibility
-        {
-          urls: "turn:openrelay.metered.ca:80",
-          username: "openrelayproject",
-          credential: "openrelayproject",
-        },
-        {
-          urls: "turn:openrelay.metered.ca:443",
-          username: "openrelayproject",
-          credential: "openrelayproject",
-        },
-        {
-          urls: "turn:openrelay.metered.ca:443?transport=tcp",
-          username: "openrelayproject",
-          credential: "openrelayproject",
-        },
-      ],
+      iceServers,
       iceCandidatePoolSize: 10,
       bundlePolicy: 'max-bundle',
       rtcpMuxPolicy: 'require',
+      iceTransportPolicy: 'all',
     });
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        console.log("Sending ICE candidate:", event.candidate.type, event.candidate.protocol);
+        const cand = event.candidate;
+        console.log(`✅ ICE candidate: ${cand.type} ${cand.protocol} ${cand.address || ''}`, 
+          cand.type === 'relay' ? '🔥 TURN RELAY WORKING!' : '');
         if (signalingWsRef.current?.readyState === WebSocket.OPEN) {
           signalingWsRef.current.send(
             JSON.stringify({ type: "ice_candidate", candidate: event.candidate })
           );
         }
       } else {
-        console.log("ICE gathering completed");
+        console.log("✅ ICE gathering completed");
       }
     };
 
@@ -402,33 +424,55 @@ export function useVoiceCall({
     ws.send(JSON.stringify({ type: "offer", sdp: offer }));
   }, [createPeerConnection]);
 
+  const flushIceCandidates = useCallback(async () => {
+    const pc = peerConnectionRef.current;
+    if (!pc || !remoteDescriptionSetRef.current) return;
+    const candidates = pendingIceCandidatesRef.current.splice(0);
+    for (const candidate of candidates) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        console.log("Flushed buffered ICE candidate");
+      } catch (e) {
+        console.error("Failed to add buffered ICE candidate:", e);
+      }
+    }
+  }, []);
+
   const handleOffer = useCallback(async (ws: WebSocket, sdp: RTCSessionDescriptionInit) => {
     console.log("Handling offer, creating peer connection");
     const pc = createPeerConnection();
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    remoteDescriptionSetRef.current = true;
+    await flushIceCandidates();
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     console.log("Sending answer to peer");
     ws.send(JSON.stringify({ type: "answer", sdp: answer }));
-  }, [createPeerConnection]);
+  }, [createPeerConnection, flushIceCandidates]);
 
   const handleAnswer = useCallback(async (sdp: RTCSessionDescriptionInit) => {
     console.log("Setting remote description from answer");
     if (peerConnectionRef.current) {
       await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(sdp));
+      remoteDescriptionSetRef.current = true;
+      await flushIceCandidates();
       console.log("Remote description set successfully");
     } else {
       console.error("No peer connection available to set answer");
     }
-  }, []);
+  }, [flushIceCandidates]);
 
   const handleIceCandidate = useCallback(async (candidate: RTCIceCandidateInit) => {
-    console.log("Adding ICE candidate from remote peer");
-    if (peerConnectionRef.current) {
-      await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
-      console.log("ICE candidate added successfully");
+    if (peerConnectionRef.current && remoteDescriptionSetRef.current) {
+      try {
+        await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+        console.log("ICE candidate added successfully");
+      } catch (e) {
+        console.error("Failed to add ICE candidate:", e);
+      }
     } else {
-      console.error("No peer connection available to add ICE candidate");
+      console.log("Buffering ICE candidate (peer connection not ready)");
+      pendingIceCandidatesRef.current.push(candidate);
     }
   }, []);
 
@@ -477,6 +521,11 @@ export function useVoiceCall({
       localStreamRef.current.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
     }
+
+    // Reset ICE candidate buffering state
+    pendingIceCandidatesRef.current = [];
+    remoteDescriptionSetRef.current = false;
+    signalingQueueRef.current = Promise.resolve();
 
     setCallState("idle");
     setIsRemoteConnected(false);
