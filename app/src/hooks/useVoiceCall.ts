@@ -248,16 +248,39 @@ export function useVoiceCall({
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun2.l.google.com:19302" },
+        { urls: "stun:stun3.l.google.com:19302" },
+        { urls: "stun:stun4.l.google.com:19302" },
+        // Public TURN servers as fallback
+        {
+          urls: "turn:openrelay.metered.ca:80",
+          username: "openrelayproject",
+          credential: "openrelayproject",
+        },
+        {
+          urls: "turn:openrelay.metered.ca:443",
+          username: "openrelayproject",
+          credential: "openrelayproject",
+        },
       ],
+      iceCandidatePoolSize: 10,
     });
 
     pc.onicecandidate = (event) => {
-      if (event.candidate && signalingWsRef.current?.readyState === WebSocket.OPEN) {
-        console.log("Sending ICE candidate");
-        signalingWsRef.current.send(
-          JSON.stringify({ type: "ice_candidate", candidate: event.candidate })
-        );
+      if (event.candidate) {
+        console.log("Sending ICE candidate:", event.candidate.type, event.candidate.protocol);
+        if (signalingWsRef.current?.readyState === WebSocket.OPEN) {
+          signalingWsRef.current.send(
+            JSON.stringify({ type: "ice_candidate", candidate: event.candidate })
+          );
+        }
+      } else {
+        console.log("ICE gathering completed");
       }
+    };
+
+    pc.onicegatheringstatechange = () => {
+      console.log("ICE gathering state:", pc.iceGatheringState);
     };
 
     pc.oniceconnectionstatechange = () => {
@@ -265,7 +288,9 @@ export function useVoiceCall({
       if (pc.iceConnectionState === 'connected') {
         console.log("ICE connection established successfully");
       } else if (pc.iceConnectionState === 'failed') {
-        console.error("ICE connection failed");
+        console.error("ICE connection failed - trying to restart ICE");
+        // Try to restart ICE
+        pc.restartIce();
       }
     };
 
