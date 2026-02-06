@@ -107,8 +107,11 @@ export function useVoiceCall({
   const startAudioProcessing = useCallback((stream: MediaStream) => {
     if (!deepgramWsRef.current) return;
 
+    // Clone the stream for transcription processing to avoid interference with WebRTC
+    const clonedStream = stream.clone();
+    
     const audioContext = new AudioContext({ sampleRate: 16000 });
-    const source = audioContext.createMediaStreamSource(stream);
+    const source = audioContext.createMediaStreamSource(clonedStream);
     const processor = audioContext.createScriptProcessor(4096, 1, 1);
 
     processor.onaudioprocess = (e) => {
@@ -148,7 +151,8 @@ export function useVoiceCall({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
-          sampleRate: 16000,
+          autoGainControl: true,
+          // Don't force sample rate - let browser use optimal rate for WebRTC
         },
         video: false,
       });
@@ -258,31 +262,55 @@ export function useVoiceCall({
 
     pc.oniceconnectionstatechange = () => {
       console.log("ICE connection state:", pc.iceConnectionState);
+      if (pc.iceConnectionState === 'connected') {
+        console.log("ICE connection established successfully");
+      } else if (pc.iceConnectionState === 'failed') {
+        console.error("ICE connection failed");
+      }
     };
 
     pc.onconnectionstatechange = () => {
       console.log("Connection state:", pc.connectionState);
+      if (pc.connectionState === 'connected') {
+        console.log("Peer connection established successfully");
+      } else if (pc.connectionState === 'failed') {
+        console.error("Peer connection failed");
+      }
     };
 
     pc.ontrack = (event) => {
-      console.log("Received remote track:", event.track.kind);
+      console.log("Received remote track:", event.track.kind, event.track.enabled, "readyState:", event.track.readyState);
       
       // Create or reuse audio element
       if (!remoteAudioRef.current) {
         remoteAudioRef.current = new Audio();
         remoteAudioRef.current.autoplay = true;
+        remoteAudioRef.current.volume = 1.0; // Ensure volume is at max
+        remoteAudioRef.current.muted = false; // Explicitly unmute
       }
       
       remoteAudioRef.current.srcObject = event.streams[0];
       
-      // Handle autoplay promise
-      remoteAudioRef.current.play().catch((err) => {
-        console.error("Failed to play remote audio:", err);
-        // Try again after user interaction
-        document.addEventListener('click', () => {
-          remoteAudioRef.current?.play().catch(console.error);
-        }, { once: true });
+      console.log("Remote audio element setup:", {
+        srcObject: remoteAudioRef.current.srcObject,
+        volume: remoteAudioRef.current.volume,
+        muted: remoteAudioRef.current.muted,
+        paused: remoteAudioRef.current.paused,
       });
+      
+      // Handle autoplay promise
+      remoteAudioRef.current.play()
+        .then(() => {
+          console.log("Remote audio playing successfully");
+        })
+        .catch((err) => {
+          console.error("Failed to play remote audio:", err);
+          // Try again after user interaction
+          document.addEventListener('click', () => {
+            console.log("Attempting to play remote audio after user interaction");
+            remoteAudioRef.current?.play().catch(console.error);
+          }, { once: true });
+        });
     };
 
     if (localStreamRef.current) {
