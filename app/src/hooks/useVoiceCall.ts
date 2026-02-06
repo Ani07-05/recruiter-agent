@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { TranscriptLine } from "../types";
 
 export type CallState = "idle" | "connecting" | "connected" | "error";
 export type ParticipantRole = "recruiter" | "hiring_manager";
@@ -6,7 +7,7 @@ export type ParticipantRole = "recruiter" | "hiring_manager";
 interface UseVoiceCallOptions {
   roomId: string;
   role: ParticipantRole;
-  onTranscript: (text: string, speaker: string, isFinal: boolean) => void;
+  onTranscript: (line: TranscriptLine) => void;
   deepgramApiKey: string;
 }
 
@@ -65,7 +66,23 @@ export function useVoiceCall({
             const transcript = data.channel.alternatives[0].transcript;
             const isFinal = data.is_final;
             if (transcript) {
-              onTranscript(transcript, role, isFinal);
+              // Split into words for animation
+              const words = transcript.split(' ').map((word: string, idx: number) => ({
+                word,
+                startTime: Date.now() + (idx * 50),
+                isInterim: !isFinal,
+              }));
+              
+              const line: TranscriptLine = {
+                id: `${role}-${Date.now()}-${Math.random()}`,
+                speaker: role,
+                words,
+                text: transcript,
+                timestamp: Date.now(),
+                isFinal,
+              };
+              
+              onTranscript(line);
             }
           }
         } catch (e) {

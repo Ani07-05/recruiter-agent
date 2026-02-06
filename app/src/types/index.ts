@@ -105,3 +105,26 @@ export type OutgoingMessage = TranscriptMessage | EndCallMessage | { type: "clea
 
 // Connection state
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "error";
+
+// Transcript overlay types
+export interface TranscriptWord {
+  word: string;
+  startTime: number;
+  isInterim?: boolean;
+}
+
+export interface TranscriptLine {
+  id: string;
+  speaker: "recruiter" | "hiring_manager";
+  words: TranscriptWord[];
+  text: string;
+  timestamp: number;
+  isFinal: boolean;
+}
+
+export interface OverlayConfig {
+  position: { x: number; y: number };
+  size: { width: number; height: number };
+  isMinimized: boolean;
+  autoScroll: boolean;
+}

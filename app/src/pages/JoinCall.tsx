@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from "react";
 import { useParams } from "react-router-dom";
 import { useVoiceCall } from "../hooks/useVoiceCall";
 import { VoiceCallOverlay } from "../components/VoiceCallOverlay";
+import { TranscriptLine } from "../types";
 import { getApiUrl } from "../utils/api";
 
 export function JoinCall() {
@@ -20,9 +21,9 @@ export function JoinCall() {
       .catch((err) => console.error("Failed to fetch config:", err));
   }, []);
 
-  const handleTranscript = useCallback((text: string, speaker: string, isFinal: boolean) => {
-    if (isFinal && text.trim()) {
-      console.log(`[${speaker}]: ${text}`);
+  const handleTranscript = useCallback((line: TranscriptLine) => {
+    if (line.isFinal && line.text.trim()) {
+      console.log(`[${line.speaker}]: ${line.text}`);
       // In a real app, you might want to send this to a separate endpoint
       // or display it on screen for the hiring manager
     }

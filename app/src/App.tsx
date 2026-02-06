@@ -4,7 +4,8 @@ import { useVoiceCall } from "./hooks/useVoiceCall";
 import { QuestionCard } from "./components/QuestionCard";
 import { SummaryView } from "./components/SummaryView";
 import { VoiceCallOverlay } from "./components/VoiceCallOverlay";
-import { SuggestedQuestion, JobSummary, ConnectionState } from "./types";
+import { TranscriptOverlay } from "./components/TranscriptOverlay";
+import { SuggestedQuestion, JobSummary, ConnectionState, TranscriptLine } from "./types";
 import { getApiUrl } from "./utils/api";
 
 function App() {
@@ -18,6 +19,10 @@ function App() {
   const [isVoiceCallActive, setIsVoiceCallActive] = useState(false);
   const [deepgramApiKey, setDeepgramApiKey] = useState<string>("");
   const [joinUrl, setJoinUrl] = useState<string>("");
+  
+  // Transcript overlay state
+  const [transcriptLines, setTranscriptLines] = useState<TranscriptLine[]>([]);
+  const [showTranscriptOverlay, setShowTranscriptOverlay] = useState(false);
 
   const handleSuggestion = useCallback((suggestion: SuggestedQuestion) => {
     setSuggestions((prev) => [suggestion, ...prev].slice(0, 10));
@@ -49,10 +54,37 @@ function App() {
   }, []);
 
   // Voice call hook
-  const handleVoiceTranscript = useCallback((text: string, speaker: string, isFinal: boolean) => {
-    if (isFinal && text.trim()) {
-      sendTranscript(text, speaker);
-      setTranscript((prev) => prev + `\n[${speaker}]: ${text}`);
+  const handleVoiceTranscript = useCallback((line: TranscriptLine) => {
+    setTranscriptLines(prev => {
+      if (line.isFinal) {
+        // Replace any interim line from same speaker with final
+        const interimIndex = prev.findIndex(l => 
+          l.speaker === line.speaker && !l.isFinal
+        );
+        if (interimIndex >= 0) {
+          const updated = [...prev];
+          updated[interimIndex] = line;
+          return updated;
+        }
+        return [...prev, line];
+      } else {
+        // Update or add interim line
+        const interimIndex = prev.findIndex(l => 
+          l.speaker === line.speaker && !l.isFinal
+        );
+        if (interimIndex >= 0) {
+          const updated = [...prev];
+          updated[interimIndex] = line;
+          return updated;
+        }
+        return [...prev, line];
+      }
+    });
+    
+    // Send to AI only if final
+    if (line.isFinal && line.text.trim()) {
+      sendTranscript(line.text, line.speaker);
+      setTranscript(prev => prev + `\n[${line.speaker}]: ${line.text}`);
     }
   }, [sendTranscript]);
 
@@ -96,11 +128,17 @@ function App() {
       voiceCall.startCall();
     }
   }, [isVoiceCallActive, roomId, voiceCall]);
+  
+  // Show overlay when call starts
+  useEffect(() => {
+    setShowTranscriptOverlay(isVoiceCallActive);
+  }, [isVoiceCallActive]);
 
   // End voice call
   const handleEndVoiceCall = () => {
     voiceCall.endCall();
     setIsVoiceCallActive(false);
+    setShowTranscriptOverlay(false);
     endCall(); // Also end the backend session
   };
 
@@ -124,6 +162,8 @@ function App() {
     setRoomId("");
     setJoinUrl("");
     setIsVoiceCallActive(false);
+    setTranscriptLines([]);
+    setShowTranscriptOverlay(false);
   };
 
   const handleDismissSuggestion = (index: number) => {
@@ -136,6 +176,33 @@ function App() {
       navigator.clipboard.writeText(joinUrl);
     }
   };
+  
+  // Save transcript
+  const handleSaveTranscript = useCallback(() => {
+    const content = transcriptLines
+      .filter(line => line.isFinal)
+      .map(line => {
+        const time = new Date(line.timestamp).toLocaleTimeString();
+        const speaker = line.speaker === 'recruiter' ? 'Recruiter' : 'Hiring Manager';
+        return `[${time}] ${speaker}: ${line.text}`;
+      })
+      .join('\n\n');
+    
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `transcript-${new Date().toISOString().split('T')[0]}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [transcriptLines]);
+
+  // Clear transcript
+  const handleClearTranscript = useCallback(() => {
+    if (confirm('Clear all transcript lines? This cannot be undone.')) {
+      setTranscriptLines([]);
+    }
+  }, []);
 
   return (
     <div className="min-h-screen bg-[var(--bg-secondary)]">
@@ -313,6 +380,17 @@ function App() {
           onToggleMute={voiceCall.toggleMute}
           onEndCall={handleEndVoiceCall}
           participantName="Hiring Manager"
+        />
+      )}
+      
+      {/* Transcript Overlay */}
+      {showTranscriptOverlay && (
+        <TranscriptOverlay
+          lines={transcriptLines}
+          isVisible={showTranscriptOverlay}
+          onSave={handleSaveTranscript}
+          onClear={handleClearTranscript}
+          onToggleVisibility={() => setShowTranscriptOverlay(prev => !prev)}
         />
       )}
     </div>
