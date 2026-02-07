@@ -1,28 +1,26 @@
 import { useState, useCallback, useEffect } from "react";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { useVoiceCall } from "./hooks/useVoiceCall";
-import { QuestionCard } from "./components/QuestionCard";
-import { SummaryView } from "./components/SummaryView";
-import { VoiceCallOverlay } from "./components/VoiceCallOverlay";
-import { TranscriptOverlay } from "./components/TranscriptOverlay";
-import { SuggestedQuestion, JobSummary, ConnectionState, TranscriptLine } from "./types";
+import { PreCallView } from "./components/PreCallView";
+import { InCallView } from "./components/InCallView";
+import { PostCallView } from "./components/PostCallView";
+import { SuggestedQuestion, JobSummary, TranscriptLine, AppPhase } from "./types";
 import { getApiUrl } from "./utils/api";
 
 function App() {
+  // Phase state
+  const [phase, setPhase] = useState<AppPhase>("pre-call");
+
+  // Core data
   const [suggestions, setSuggestions] = useState<SuggestedQuestion[]>([]);
   const [summary, setSummary] = useState<JobSummary | null>(null);
-  const [transcript, setTranscript] = useState<string>("");
-  const [inputText, setInputText] = useState("");
-  
+  const [transcriptLines, setTranscriptLines] = useState<TranscriptLine[]>([]);
+
   // Voice call state
   const [roomId, setRoomId] = useState<string>("");
   const [isVoiceCallActive, setIsVoiceCallActive] = useState(false);
   const [deepgramApiKey, setDeepgramApiKey] = useState<string>("");
   const [joinUrl, setJoinUrl] = useState<string>("");
-  
-  // Transcript overlay state
-  const [transcriptLines, setTranscriptLines] = useState<TranscriptLine[]>([]);
-  const [showTranscriptOverlay, setShowTranscriptOverlay] = useState(false);
 
   const handleSuggestion = useCallback((suggestion: SuggestedQuestion) => {
     setSuggestions((prev) => [suggestion, ...prev].slice(0, 10));
@@ -30,6 +28,7 @@ function App() {
 
   const handleSummary = useCallback((newSummary: JobSummary) => {
     setSummary(newSummary);
+    setPhase("post-call");
   }, []);
 
   const {
@@ -53,42 +52,41 @@ function App() {
       .catch((err) => console.error("Failed to fetch config:", err));
   }, []);
 
-  // Voice call hook
-  const handleVoiceTranscript = useCallback((line: TranscriptLine) => {
-    setTranscriptLines(prev => {
-      if (line.isFinal) {
-        // Replace any interim line from same speaker with final
-        const interimIndex = prev.findIndex(l => 
-          l.speaker === line.speaker && !l.isFinal
-        );
-        if (interimIndex >= 0) {
-          const updated = [...prev];
-          updated[interimIndex] = line;
-          return updated;
+  // Voice call transcript handler
+  const handleVoiceTranscript = useCallback(
+    (line: TranscriptLine) => {
+      setTranscriptLines((prev) => {
+        if (line.isFinal) {
+          const interimIndex = prev.findIndex(
+            (l) => l.speaker === line.speaker && !l.isFinal
+          );
+          if (interimIndex >= 0) {
+            const updated = [...prev];
+            updated[interimIndex] = line;
+            return updated;
+          }
+          return [...prev, line];
+        } else {
+          const interimIndex = prev.findIndex(
+            (l) => l.speaker === line.speaker && !l.isFinal
+          );
+          if (interimIndex >= 0) {
+            const updated = [...prev];
+            updated[interimIndex] = line;
+            return updated;
+          }
+          return [...prev, line];
         }
-        return [...prev, line];
-      } else {
-        // Update or add interim line
-        const interimIndex = prev.findIndex(l => 
-          l.speaker === line.speaker && !l.isFinal
-        );
-        if (interimIndex >= 0) {
-          const updated = [...prev];
-          updated[interimIndex] = line;
-          return updated;
-        }
-        return [...prev, line];
-      }
-    });
-    
-    // Send to AI only if final
-    if (line.isFinal && line.text.trim()) {
-      sendTranscript(line.text, line.speaker);
-      setTranscript(prev => prev + `\n[${line.speaker}]: ${line.text}`);
-    }
-  }, [sendTranscript]);
+      });
 
-  // Voice call hook - recreate when roomId changes
+      if (line.isFinal && line.text.trim()) {
+        sendTranscript(line.text, line.speaker);
+      }
+    },
+    [sendTranscript]
+  );
+
+  // Voice call hook
   const voiceCall = useVoiceCall({
     roomId,
     role: "recruiter",
@@ -96,7 +94,7 @@ function App() {
     deepgramApiKey,
   });
 
-  // Create a new room
+  // Create room
   const handleCreateRoom = async () => {
     try {
       const response = await fetch(getApiUrl("/api/rooms"), {
@@ -105,322 +103,140 @@ function App() {
       });
       const data = await response.json();
       const newRoomId = data.room_id;
-      
-      // Use environment variable for public URL, fallback to window.location.origin
-      const publicUrl = import.meta.env.VITE_PUBLIC_URL || window.location.origin;
+
+      const publicUrl =
+        import.meta.env.VITE_PUBLIC_URL || window.location.origin;
       const url = `${publicUrl}${data.join_url}`;
-      
-      // Set state first
+
       setRoomId(newRoomId);
       setJoinUrl(url);
       setIsVoiceCallActive(true);
-      
-      // Wait a bit for state to update, then start call
-      // We'll pass the roomId directly to a new approach
     } catch (err) {
       console.error("Failed to create room:", err);
     }
   };
 
-  // Effect to start call when roomId and isVoiceCallActive are set
+  // Start call when ready
   useEffect(() => {
     if (isVoiceCallActive && roomId && voiceCall.callState === "idle") {
       voiceCall.startCall();
     }
   }, [isVoiceCallActive, roomId, voiceCall]);
-  
-  // Show overlay when call starts
+
+  // Transition to in-call phase
   useEffect(() => {
-    setShowTranscriptOverlay(isVoiceCallActive);
-  }, [isVoiceCallActive]);
+    if (isVoiceCallActive && phase === "pre-call") {
+      setPhase("in-call");
+    }
+  }, [isVoiceCallActive, phase]);
 
   // End voice call
   const handleEndVoiceCall = () => {
     voiceCall.endCall();
     setIsVoiceCallActive(false);
-    setShowTranscriptOverlay(false);
-    endCall(); // Also end the backend session
-  };
-
-  const handleSendTranscript = () => {
-    if (inputText.trim()) {
-      sendTranscript(inputText, "hiring_manager");
-      setTranscript((prev) => prev + `\n[Hiring Manager]: ${inputText}`);
-      setInputText("");
-    }
-  };
-
-  const handleEndCall = () => {
     endCall();
+    // Phase will transition to post-call when summary arrives (handleSummary)
+    // Set post-call immediately as fallback (summary may arrive later)
+    setPhase("post-call");
   };
 
+  // Text mode send (pre-call)
+  const handleSendTranscript = (text: string) => {
+    sendTranscript(text, "hiring_manager");
+  };
+
+  // New session
   const handleNewSession = () => {
     clearSession();
     setSuggestions([]);
     setSummary(null);
-    setTranscript("");
     setRoomId("");
     setJoinUrl("");
     setIsVoiceCallActive(false);
     setTranscriptLines([]);
-    setShowTranscriptOverlay(false);
+    setPhase("pre-call");
   };
 
+  // Dismiss suggestion
   const handleDismissSuggestion = (index: number) => {
     setSuggestions((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // Copy join URL to clipboard
+  // Copy join URL
   const handleCopyJoinUrl = () => {
     if (joinUrl) {
       navigator.clipboard.writeText(joinUrl);
     }
   };
-  
+
   // Save transcript
   const handleSaveTranscript = useCallback(() => {
     const content = transcriptLines
-      .filter(line => line.isFinal)
-      .map(line => {
+      .filter((line) => line.isFinal)
+      .map((line) => {
         const time = new Date(line.timestamp).toLocaleTimeString();
-        const speaker = line.speaker === 'recruiter' ? 'Recruiter' : 'Hiring Manager';
+        const speaker =
+          line.speaker === "recruiter" ? "Recruiter" : "Hiring Manager";
         return `[${time}] ${speaker}: ${line.text}`;
       })
-      .join('\n\n');
-    
-    const blob = new Blob([content], { type: 'text/plain' });
+      .join("\n\n");
+
+    const blob = new Blob([content], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
+    const a = document.createElement("a");
     a.href = url;
-    a.download = `transcript-${new Date().toISOString().split('T')[0]}.txt`;
+    a.download = `transcript-${new Date().toISOString().split("T")[0]}.txt`;
     a.click();
     URL.revokeObjectURL(url);
   }, [transcriptLines]);
 
   // Clear transcript
   const handleClearTranscript = useCallback(() => {
-    if (confirm('Clear all transcript lines? This cannot be undone.')) {
+    if (confirm("Clear all transcript lines? This cannot be undone.")) {
       setTranscriptLines([]);
     }
   }, []);
 
-  return (
-    <div className="min-h-screen bg-[var(--bg-secondary)]">
-      {/* Header */}
-      <header className="bg-white border-b border-[var(--border-color)] px-6 py-4">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-[var(--accent)] rounded-lg flex items-center justify-center">
-              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-              </svg>
-            </div>
-            <h1 className="text-lg font-semibold text-[var(--text-primary)]">Recruiter Assistant</h1>
-          </div>
-          <div className="flex items-center gap-4">
-            <ConnectionStatus state={connectionState} onReconnect={reconnect} />
-            
-            {!isVoiceCallActive && !joinUrl && (
-              <button
-                onClick={handleCreateRoom}
-                className="px-4 py-1.5 text-sm bg-[var(--accent)] text-white rounded-md hover:bg-[var(--accent-hover)] transition-colors flex items-center gap-2"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-                </svg>
-                Start Voice Call
-              </button>
-            )}
-            
-            {joinUrl && !isVoiceCallActive && (
-              <button
-                onClick={handleCopyJoinUrl}
-                className="px-4 py-1.5 text-sm bg-[var(--success)] text-white rounded-md hover:bg-green-700 transition-colors flex items-center gap-2"
-                title="Copy link to share with hiring manager"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
-                Copy Join Link
-              </button>
-            )}
-            
-            <button
-              onClick={handleNewSession}
-              className="px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded-md transition-colors"
-            >
-              New Session
-            </button>
-            
-            {!isVoiceCallActive && (
-              <button
-                onClick={handleEndCall}
-                className="px-4 py-1.5 text-sm bg-[var(--accent)] text-white rounded-md hover:bg-[var(--accent-hover)] transition-colors"
-              >
-                End Call & Summarize
-              </button>
-            )}
-          </div>
-        </div>
-      </header>
+  // Render based on phase
+  switch (phase) {
+    case "pre-call":
+      return (
+        <PreCallView
+          connectionState={connectionState}
+          joinUrl={joinUrl}
+          onCreateRoom={handleCreateRoom}
+          onSendTranscript={handleSendTranscript}
+          onCopyJoinUrl={handleCopyJoinUrl}
+          onReconnect={reconnect}
+        />
+      );
 
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto p-6">
-        {/* Join URL Banner */}
-        {joinUrl && (
-          <div className="mb-6 bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] rounded-lg p-4 text-white animate-fade-in">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-white/20 rounded-lg flex items-center justify-center">
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-                  </svg>
-                </div>
-                <div>
-                  <p className="font-semibold">Room Created - Share this link</p>
-                  <p className="text-sm text-white/90 font-mono mt-1">{joinUrl}</p>
-                </div>
-              </div>
-              <button
-                onClick={handleCopyJoinUrl}
-                className="px-4 py-2 bg-white/20 hover:bg-white/30 rounded-md text-sm font-medium transition-colors flex items-center gap-2"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
-                Copy Link
-              </button>
-            </div>
-          </div>
-        )}
-        
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left: Transcript Input */}
-          <div className="lg:col-span-2 space-y-4">
-            {/* Transcript Display */}
-            <div className="bg-white rounded-lg border border-[var(--border-color)] p-4">
-              <h2 className="text-sm font-medium text-[var(--text-secondary)] mb-3">Conversation Transcript</h2>
-              <div className="h-64 overflow-y-auto bg-[var(--bg-secondary)] rounded-md p-3 font-mono text-sm whitespace-pre-wrap text-[var(--text-primary)]">
-                {transcript || <span className="text-[var(--text-muted)]">Transcript will appear here...</span>}
-              </div>
-            </div>
-
-            {/* Input Area */}
-            <div className="bg-white rounded-lg border border-[var(--border-color)] p-4">
-              <h2 className="text-sm font-medium text-[var(--text-secondary)] mb-3">Simulate Transcript Input</h2>
-              <p className="text-xs text-[var(--text-muted)] mb-3">
-                Enter what the hiring manager says to test the assistant
-              </p>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleSendTranscript()}
-                  placeholder="Type what the hiring manager says..."
-                  className="flex-1 px-3 py-2 border border-[var(--border-color)] rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:border-transparent"
-                />
-                <button
-                  onClick={handleSendTranscript}
-                  disabled={!inputText.trim() || connectionState !== "connected"}
-                  className="px-4 py-2 bg-[var(--accent)] text-white text-sm rounded-md hover:bg-[var(--accent-hover)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  Send
-                </button>
-              </div>
-            </div>
-
-            {/* Summary Section */}
-            {summary && (
-              <div className="animate-fade-in">
-                <SummaryView summary={summary} onClose={() => setSummary(null)} />
-              </div>
-            )}
-          </div>
-
-          {/* Right: Suggestions Panel */}
-          <div className="space-y-4">
-            <div className="bg-white rounded-lg border border-[var(--border-color)] p-4">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-sm font-medium text-[var(--text-secondary)]">Suggested Questions</h2>
-                <span className="text-xs text-[var(--text-muted)]">{suggestions.length} suggestions</span>
-              </div>
-
-              {suggestions.length > 0 ? (
-                <div className="space-y-3 max-h-[600px] overflow-y-auto">
-                  {suggestions.map((suggestion, index) => (
-                    <QuestionCard
-                      key={`${suggestion.question}-${index}`}
-                      question={suggestion}
-                      isNew={index === 0}
-                      onDismiss={() => handleDismissSuggestion(index)}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="text-center py-8 text-[var(--text-muted)]">
-                  <svg className="w-12 h-12 mx-auto mb-3 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  <p className="text-sm">No suggestions yet</p>
-                  <p className="text-xs mt-1">Questions will appear as you add transcript</p>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </main>
-
-      {/* Voice Call Overlay */}
-      {isVoiceCallActive && (
-        <VoiceCallOverlay
+    case "in-call":
+      return (
+        <InCallView
           callState={voiceCall.callState}
           isMuted={voiceCall.isMuted}
           isRemoteConnected={voiceCall.isRemoteConnected}
           onToggleMute={voiceCall.toggleMute}
           onEndCall={handleEndVoiceCall}
-          participantName="Hiring Manager"
+          transcriptLines={transcriptLines}
+          onSaveTranscript={handleSaveTranscript}
+          onClearTranscript={handleClearTranscript}
+          suggestions={suggestions}
+          onDismissSuggestion={handleDismissSuggestion}
+          connectionState={connectionState}
         />
-      )}
-      
-      {/* Transcript Overlay */}
-      {showTranscriptOverlay && (
-        <TranscriptOverlay
-          lines={transcriptLines}
-          isVisible={showTranscriptOverlay}
-          onSave={handleSaveTranscript}
-          onClear={handleClearTranscript}
-          onToggleVisibility={() => setShowTranscriptOverlay(prev => !prev)}
+      );
+
+    case "post-call":
+      return (
+        <PostCallView
+          summary={summary}
+          transcriptLines={transcriptLines}
+          onNewSession={handleNewSession}
         />
-      )}
-    </div>
-  );
-}
-
-function ConnectionStatus({ state, onReconnect }: { state: ConnectionState; onReconnect: () => void }) {
-  const statusConfig = {
-    connected: { color: "bg-[var(--success)]", text: "Connected" },
-    connecting: { color: "bg-[var(--warning)] animate-pulse", text: "Connecting..." },
-    disconnected: { color: "bg-[var(--text-muted)]", text: "Disconnected" },
-    error: { color: "bg-[var(--error)]", text: "Error" },
-  };
-
-  const config = statusConfig[state];
-
-  return (
-    <div className="flex items-center gap-2">
-      <div className={`w-2 h-2 rounded-full ${config.color}`} />
-      <span className="text-sm text-[var(--text-secondary)]">{config.text}</span>
-      {(state === "error" || state === "disconnected") && (
-        <button
-          onClick={onReconnect}
-          className="text-xs text-[var(--accent)] hover:underline"
-        >
-          Reconnect
-        </button>
-      )}
-    </div>
-  );
+      );
+  }
 }
 
 export default App;

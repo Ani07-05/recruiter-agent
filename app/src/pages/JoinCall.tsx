@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { useParams } from "react-router-dom";
 import { useVoiceCall } from "../hooks/useVoiceCall";
-import { VoiceCallOverlay } from "../components/VoiceCallOverlay";
+import { CallControls } from "../components/CallControls";
 import { TranscriptLine } from "../types";
 import { getApiUrl } from "../utils/api";
 
@@ -24,8 +24,6 @@ export function JoinCall() {
   const handleTranscript = useCallback((line: TranscriptLine) => {
     if (line.isFinal && line.text.trim()) {
       console.log(`[${line.speaker}]: ${line.text}`);
-      // In a real app, you might want to send this to a separate endpoint
-      // or display it on screen for the hiring manager
     }
   }, []);
 
@@ -38,7 +36,7 @@ export function JoinCall() {
 
   const handleJoinCall = async () => {
     if (!roomId) return;
-    
+
     setIsCallActive(true);
     setHasJoined(true);
     await voiceCall.startCall();
@@ -127,30 +125,34 @@ export function JoinCall() {
 
   return (
     <div className="min-h-screen bg-[var(--bg-secondary)] flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-lg p-8 max-w-md text-center">
-        <div className="w-16 h-16 bg-[var(--success)]/10 rounded-full flex items-center justify-center mx-auto mb-4">
-          <svg className="w-8 h-8 text-[var(--success)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-          </svg>
+      <div className="bg-white rounded-lg shadow-lg p-8 max-w-md w-full">
+        <div className="text-center mb-6">
+          <div className="w-16 h-16 bg-[var(--success)]/10 rounded-full flex items-center justify-center mx-auto mb-4">
+            <svg className="w-8 h-8 text-[var(--success)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <h1 className="text-xl font-semibold text-[var(--text-primary)] mb-2">
+            Connected to Call
+          </h1>
+          <p className="text-[var(--text-secondary)] mb-6">
+            You're now in the call. Use the controls below to manage your audio.
+          </p>
         </div>
-        <h1 className="text-xl font-semibold text-[var(--text-primary)] mb-2">
-          Connected to Call
-        </h1>
-        <p className="text-[var(--text-secondary)] mb-6">
-          You're now in the call. Use the controls below to manage your audio.
-        </p>
-      </div>
 
-      {isCallActive && (
-        <VoiceCallOverlay
-          callState={voiceCall.callState}
-          isMuted={voiceCall.isMuted}
-          isRemoteConnected={voiceCall.isRemoteConnected}
-          onToggleMute={voiceCall.toggleMute}
-          onEndCall={handleEndCall}
-          participantName="Recruiter"
-        />
-      )}
+        {isCallActive && (
+          <div className="flex justify-center">
+            <CallControls
+              callState={voiceCall.callState}
+              isMuted={voiceCall.isMuted}
+              isRemoteConnected={voiceCall.isRemoteConnected}
+              onToggleMute={voiceCall.toggleMute}
+              onEndCall={handleEndCall}
+              participantName="Recruiter"
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 }

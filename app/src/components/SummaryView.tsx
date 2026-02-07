@@ -21,9 +21,12 @@ export function SummaryView({ summary, onClose }: SummaryViewProps) {
       {/* Header */}
       <div className="flex items-start justify-between mb-6 pb-4 border-b border-[var(--border-color)]">
         <div>
-          <h2 className="text-xl font-semibold text-[var(--text-primary)]">{summary.role_title}</h2>
+          <h2 className="text-headline text-[var(--text-primary)]">{summary.role_title}</h2>
           {summary.department && (
             <p className="text-sm text-[var(--text-secondary)] mt-1">{summary.department}</p>
+          )}
+          {summary.reporting_to && (
+            <p className="text-xs text-[var(--text-muted)] mt-0.5">Reports to: {summary.reporting_to}</p>
           )}
         </div>
         <div className="flex gap-2">

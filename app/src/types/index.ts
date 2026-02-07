@@ -6,10 +6,24 @@ export interface QuestionOption {
   description: string;
 }
 
+export type QuestionPriority = "urgent" | "high" | "medium" | "low";
+export type QuestionCategory =
+  | "technical_requirements"
+  | "experience_level"
+  | "role_specifics"
+  | "culture_soft_skills"
+  | "logistics"
+  | "compensation"
+  | "team_context";
+export type TimingHint = "ask_now" | "ask_soon" | "save_for_later";
+
 export interface SuggestedQuestion {
   question: string;
   options: QuestionOption[];
   context: string;
+  priority?: QuestionPriority;
+  category?: QuestionCategory;
+  timing_hint?: TimingHint;
 }
 
 // Job summary types
@@ -61,6 +75,7 @@ export interface JobSummary {
   team_context: TeamContext;
   unclear_points: string[];
   additional_notes?: string;
+  completeness_score?: number;
 }
 
 // WebSocket message types
@@ -122,9 +137,5 @@ export interface TranscriptLine {
   isFinal: boolean;
 }
 
-export interface OverlayConfig {
-  position: { x: number; y: number };
-  size: { width: number; height: number };
-  isMinimized: boolean;
-  autoScroll: boolean;
-}
+// AppPhase for phase-driven layout
+export type AppPhase = "pre-call" | "in-call" | "post-call";

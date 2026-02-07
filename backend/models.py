@@ -1,6 +1,6 @@
 """Pydantic models for structured output."""
 
-from typing import Optional
+from typing import Optional, Literal
 from pydantic import BaseModel, Field
 
 
@@ -20,6 +20,21 @@ class SuggestedQuestion(BaseModel):
         max_length=4
     )
     context: str = Field(description="Why this question is relevant based on the conversation")
+    priority: Literal["urgent", "high", "medium", "low"] = Field(
+        default="medium",
+        description="Priority level of the question"
+    )
+    category: Literal[
+        "technical_requirements", "experience_level", "role_specifics",
+        "culture_soft_skills", "logistics", "compensation", "team_context"
+    ] = Field(
+        default="role_specifics",
+        description="Which coverage area this question addresses"
+    )
+    timing_hint: Literal["ask_now", "ask_soon", "save_for_later"] = Field(
+        default="ask_now",
+        description="When to ask this question"
+    )
 
 
 # Job summary models
@@ -93,6 +108,12 @@ class JobSummary(BaseModel):
     additional_notes: Optional[str] = Field(
         default=None,
         description="Any other relevant information from the conversation"
+    )
+    completeness_score: int = Field(
+        default=0,
+        ge=0,
+        le=100,
+        description="Overall completeness of the job requirements gathered (0-100)"
     )
 
 

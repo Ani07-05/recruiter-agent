@@ -38,9 +38,24 @@ The question should help gather specific, actionable information about the role.
             "context": {
                 "type": "string",
                 "description": "Why this question is relevant based on what was just discussed"
+            },
+            "priority": {
+                "type": "string",
+                "enum": ["urgent", "high", "medium", "low"],
+                "description": "Priority level: urgent (critical gap after significant time), high (vague statement needing clarification), medium (strengthens spec), low (nice-to-know)"
+            },
+            "category": {
+                "type": "string",
+                "enum": ["technical_requirements", "experience_level", "role_specifics", "culture_soft_skills", "logistics", "compensation", "team_context"],
+                "description": "Which coverage area this question addresses"
+            },
+            "timing_hint": {
+                "type": "string",
+                "enum": ["ask_now", "ask_soon", "save_for_later"],
+                "description": "When to ask: ask_now (topic is live), ask_soon (adjacent topic), save_for_later (different topic)"
             }
         },
-        "required": ["question", "options", "context"]
+        "required": ["question", "options", "context", "priority", "category", "timing_hint"]
     }
 }
 
@@ -173,9 +188,15 @@ Include all information gathered during the call, and note any areas that remain
             "additional_notes": {
                 "type": "string",
                 "description": "Any other relevant information"
+            },
+            "completeness_score": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100,
+                "description": "Overall completeness of the job requirements gathered (0-100)"
             }
         },
-        "required": ["role_title", "skills", "responsibilities", "unclear_points"]
+        "required": ["role_title", "skills", "responsibilities", "unclear_points", "completeness_score"]
     }
 }
 
