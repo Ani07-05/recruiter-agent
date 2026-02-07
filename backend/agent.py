@@ -1,13 +1,20 @@
-"""Claude/Groq Agent configuration for recruiter assistance."""
+"""Recruiter Agent with state machine for paced, single-question-per-turn flow."""
 
 import os
 import json
+import time
+import asyncio
+import logging
+from enum import Enum
 from typing import Callable, Any
+
 from groq import Groq
 
 from tools import ALL_TOOLS, process_tool_call
 from prompts import RECRUITER_SYSTEM_PROMPT, SUMMARY_GENERATION_PROMPT
 from models import SuggestedQuestion, JobSummary
+
+logger = logging.getLogger(__name__)
 
 
 def convert_tools_to_openai_format(tools: list[dict]) -> list[dict]:
@@ -25,14 +32,23 @@ def convert_tools_to_openai_format(tools: list[dict]) -> list[dict]:
     return openai_tools
 
 
+class ConversationState(str, Enum):
+    """State machine states for the recruiter agent."""
+    LISTENING = "listening"           # Waiting for hiring manager to speak
+    GENERATING = "generating"         # LLM call in progress
+    QUESTION_SHOWN = "question_shown" # Question displayed, waiting for HM answer
+    PROCESSING_ANSWER = "processing_answer"  # HM answered, processing context
+
+
 class RecruiterSession:
-    """Manages a conversation session with the Groq agent."""
+    """Manages a conversation session with state machine pacing."""
 
     def __init__(
         self,
         on_suggestion: Callable[[SuggestedQuestion], Any] | None = None,
         on_summary: Callable[[JobSummary], Any] | None = None,
-        model: str = "openai/gpt-oss-120b"
+        on_state_change: Callable[[str], Any] | None = None,
+        model: str = "llama-3.1-8b-instant"
     ):
         api_key = os.environ.get("GROQ_API_KEY")
         if not api_key:
@@ -43,27 +59,31 @@ class RecruiterSession:
         self.messages: list[dict] = []
         self.on_suggestion = on_suggestion
         self.on_summary = on_summary
+        self.on_state_change = on_state_change
         self.transcript_buffer: list[str] = []
         self.tools = convert_tools_to_openai_format(ALL_TOOLS)
-        
-        # Buffering for real-time transcripts
-        self.pending_segments: list[tuple[str, str | None]] = []  # (text, speaker)
-        self.min_words_to_process = 8  # Only process if buffer has 8+ words
-        self.last_transcript_time = 0
-        self.flush_timeout_seconds = 2.5  # Flush after 2.5s of silence
 
-    def _format_transcript_entry(self, text: str, speaker: str | None = None) -> str:
-        """Format a transcript entry with optional speaker label."""
-        if speaker:
-            return f"[{speaker}]: {text}"
-        return text
-    
-    def _count_words(self, segments: list[tuple[str, str | None]]) -> int:
-        """Count total words in pending segments."""
-        return sum(len(text.split()) for text, _ in segments)
-    
+        # State machine
+        self.state = ConversationState.LISTENING
+        self.current_question: SuggestedQuestion | None = None
+        self.queued_transcript: list[tuple[str, str | None]] = []
+
+        # Turn detection
+        self.last_speaker: str | None = None
+        self.last_final_transcript_time: float = 0
+        self._turn_timer_task: asyncio.Task | None = None
+        self.turn_silence_threshold: float = 1.5  # seconds of silence = turn complete
+
+    async def _set_state(self, new_state: ConversationState):
+        """Transition to a new state and notify."""
+        old_state = self.state
+        self.state = new_state
+        logger.info(f"State: {old_state.value} -> {new_state.value}")
+        if self.on_state_change:
+            await self._safe_callback(self.on_state_change, new_state.value)
+
     def _is_filler_only(self, text: str) -> bool:
-        """Check if text is only filler words (uh, yeah, mhmm, okay, etc)."""
+        """Check if text is only filler words."""
         filler_words = {
             "uh", "um", "ah", "hmm", "mhmm", "uh-huh", "yeah", "yep", "yes", "no",
             "okay", "ok", "alright", "sure", "right", "got", "gotcha", "nice",
@@ -73,179 +93,217 @@ class RecruiterSession:
         words = text.lower().strip().replace(".", "").replace("?", "").replace("!", "").split()
         if not words:
             return True
-        # If all words are fillers, it's filler-only
         return all(word in filler_words for word in words)
-    
-    def _should_flush_buffer(self) -> bool:
-        """Determine if we should flush pending segments to LLM."""
-        import time
-        
-        if not self.pending_segments:
-            return False
-        
-        # Check if we have enough words
-        word_count = self._count_words(self.pending_segments)
-        if word_count < self.min_words_to_process:
-            # Not enough words yet, check if silence timeout reached
-            time_since_last = time.time() - self.last_transcript_time
-            return time_since_last >= self.flush_timeout_seconds
-        
-        # We have enough words, flush
-        return True
-    
-    def _merge_pending_segments(self) -> str | None:
-        """Merge pending segments into a single transcript entry, grouped by speaker."""
-        if not self.pending_segments:
-            return None
-        
-        # Group consecutive segments by speaker
-        merged = []
-        current_speaker = None
-        current_text = []
-        
-        for text, speaker in self.pending_segments:
-            if speaker != current_speaker:
-                if current_text:
-                    merged_text = " ".join(current_text).strip()
-                    if merged_text and not self._is_filler_only(merged_text):
-                        merged.append(self._format_transcript_entry(merged_text, current_speaker))
-                current_speaker = speaker
-                current_text = [text]
-            else:
-                current_text.append(text)
-        
-        # Don't forget the last group
-        if current_text:
-            merged_text = " ".join(current_text).strip()
-            if merged_text and not self._is_filler_only(merged_text):
-                merged.append(self._format_transcript_entry(merged_text, current_speaker))
-        
-        return "\n".join(merged) if merged else None
 
-    async def process_transcript(self, text: str, speaker: str | None = None) -> list[dict]:
-        """Process a transcript segment and potentially generate suggestions.
-        
-        Uses buffering to accumulate short fragments before sending to LLM.
-        Only processes when enough words accumulate or after a pause in speech.
+    async def process_transcript(self, text: str, speaker: str | None = None, is_final: bool = True) -> list[dict]:
+        """Process a transcript segment through the state machine.
 
-        Returns a list of tool outputs (suggestions or summaries).
+        Key rules:
+        - Recruiter speech: record but NEVER trigger LLM
+        - Hiring manager speech: trigger question generation based on state
+        - Only one question at a time, strict pacing
         """
-        import time
-        
-        # Skip completely empty or whitespace-only text
         if not text or not text.strip():
             return []
-        
-        # Skip if text is only filler words
-        if self._is_filler_only(text):
-            return []
-        
-        # Add to pending buffer
-        self.pending_segments.append((text.strip(), speaker))
-        self.last_transcript_time = time.time()
-        
-        # Check if we should flush
-        if not self._should_flush_buffer():
-            return []  # Keep buffering
-        
-        # Merge and process pending segments
-        merged_entry = self._merge_pending_segments()
-        self.pending_segments = []  # Clear buffer
-        
-        if not merged_entry:
-            return []  # Nothing substantive to process
-        
-        # Add to permanent transcript buffer
-        self.transcript_buffer.append(merged_entry)
 
-        # Create the user message with the merged transcript
-        user_message = f"New transcript segment:\n{merged_entry}"
+        text = text.strip()
+
+        # Always record to transcript buffer
+        entry = f"[{speaker or 'unknown'}]: {text}"
+        self.transcript_buffer.append(entry)
+
+        # Track speaker and timing
+        self.last_speaker = speaker
+        if is_final:
+            self.last_final_transcript_time = time.time()
+
+        # --- Recruiter speech: record only, never trigger LLM ---
+        if speaker == "recruiter":
+            logger.info(f"Recruiter spoke: '{text[:60]}...' (recorded, no LLM)")
+            # Add to message history so LLM has context
+            self.messages.append({
+                "role": "user",
+                "content": f"[Recruiter said]: {text}"
+            })
+            return []
+
+        # --- Hiring manager speech ---
+        # Skip filler
+        if self._is_filler_only(text):
+            logger.info(f"Skipped filler: '{text}'")
+            return []
+
+        logger.info(f"HM spoke: '{text[:80]}...' | State: {self.state.value}")
+
+        # Handle based on current state
+        if self.state == ConversationState.GENERATING:
+            # Already generating, queue this transcript
+            self.queued_transcript.append((text, speaker))
+            logger.info(f"Queued transcript (LLM busy). Queue size: {len(self.queued_transcript)}")
+            return []
+
+        if self.state == ConversationState.QUESTION_SHOWN:
+            # HM is answering our question! Transition to processing
+            await self._set_state(ConversationState.PROCESSING_ANSWER)
+            # Cancel any pending turn timer
+            self._cancel_turn_timer()
+            # Process the answer + generate next question
+            return await self._generate_question(text, speaker, is_answer=True)
+
+        if self.state == ConversationState.PROCESSING_ANSWER:
+            # Still processing answer, queue
+            self.queued_transcript.append((text, speaker))
+            logger.info(f"Queued transcript (processing answer). Queue size: {len(self.queued_transcript)}")
+            return []
+
+        # State is LISTENING — start turn detection timer
+        self._cancel_turn_timer()
+        self.queued_transcript.append((text, speaker))
+
+        # Start a timer: after 1.5s of silence, treat turn as complete and generate
+        self._turn_timer_task = asyncio.create_task(
+            self._turn_complete_timer()
+        )
+        return []
+
+    async def _turn_complete_timer(self):
+        """Wait for silence, then trigger question generation."""
+        try:
+            await asyncio.sleep(self.turn_silence_threshold)
+
+            # Check that no new speech arrived during the wait
+            time_since_last = time.time() - self.last_final_transcript_time
+            if time_since_last < self.turn_silence_threshold and self.last_speaker == "hiring_manager":
+                # More speech might be coming, restart timer
+                self._turn_timer_task = asyncio.create_task(self._turn_complete_timer())
+                return
+
+            # Turn is complete — flush queued transcript and generate
+            if self.queued_transcript and self.state == ConversationState.LISTENING:
+                merged_text = " ".join(text for text, _ in self.queued_transcript)
+                speaker = self.queued_transcript[-1][1]  # Use last speaker
+                self.queued_transcript = []
+
+                if not self._is_filler_only(merged_text):
+                    logger.info(f"Turn complete. Generating for: '{merged_text[:80]}...'")
+                    await self._generate_question(merged_text, speaker)
+        except asyncio.CancelledError:
+            pass
+
+    def _cancel_turn_timer(self):
+        """Cancel any pending turn-complete timer."""
+        if self._turn_timer_task and not self._turn_timer_task.done():
+            self._turn_timer_task.cancel()
+            self._turn_timer_task = None
+
+    async def _generate_question(self, text: str, speaker: str | None = None, is_answer: bool = False) -> list[dict]:
+        """Generate a single question via LLM. No multi-round tool loop."""
+        start_time = time.time()
+
+        await self._set_state(ConversationState.GENERATING)
+
+        # Build the user message
+        if is_answer:
+            user_message = f"The hiring manager answered your previous question:\n[hiring_manager]: {text}\n\nBased on this answer and the conversation so far, suggest the next most important clarifying question."
+        else:
+            user_message = f"New transcript from hiring manager:\n[hiring_manager]: {text}"
 
         self.messages.append({"role": "user", "content": user_message})
 
         outputs = []
 
-        # Get response from Groq
-        response = self.client.chat.completions.create(
-            model=self.model,
-            max_tokens=1024,
-            messages=[
-                {"role": "system", "content": RECRUITER_SYSTEM_PROMPT},
-                *self.messages
-            ],
-            tools=self.tools,
-            tool_choice="auto"
-        )
+        try:
+            llm_start = time.time()
+            logger.info(f"Calling LLM ({self.model})...")
 
-        # Process the response
-        message = response.choices[0].message
+            response = self.client.chat.completions.create(
+                model=self.model,
+                max_tokens=512,
+                messages=[
+                    {"role": "system", "content": RECRUITER_SYSTEM_PROMPT},
+                    *self.messages
+                ],
+                tools=self.tools,
+                tool_choice={"type": "function", "function": {"name": "suggest_question"}}
+            )
 
-        while message.tool_calls:
-            # Add assistant message with tool calls
-            self.messages.append({
-                "role": "assistant",
-                "content": message.content,
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments
-                        }
-                    }
-                    for tc in message.tool_calls
-                ]
-            })
+            llm_time = time.time() - llm_start
+            logger.info(f"LLM responded in {llm_time*1000:.0f}ms")
 
-            # Process each tool call
-            for tool_call in message.tool_calls:
+            message = response.choices[0].message
+
+            # Process exactly ONE tool call — no loop
+            if message.tool_calls:
+                tool_call = message.tool_calls[0]  # Only first
                 tool_name = tool_call.function.name
                 tool_input = json.loads(tool_call.function.arguments)
 
                 result = process_tool_call(tool_name, tool_input)
                 outputs.append(result)
 
-                # Invoke callbacks
                 if result["type"] == "suggestion" and self.on_suggestion:
                     suggestion = SuggestedQuestion(**result["data"])
+                    self.current_question = suggestion
+                    logger.info(f"Question: {suggestion.question[:80]}...")
                     await self._safe_callback(self.on_suggestion, suggestion)
-                elif result["type"] == "summary" and self.on_summary:
-                    summary = JobSummary(**result["data"])
-                    await self._safe_callback(self.on_summary, summary)
 
-                # Add tool result to messages
+                # Add to message history
+                self.messages.append({
+                    "role": "assistant",
+                    "content": message.content,
+                    "tool_calls": [{
+                        "id": tool_call.id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_call.function.name,
+                            "arguments": tool_call.function.arguments
+                        }
+                    }]
+                })
                 self.messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
-                    "content": "Suggestion sent to recruiter." if result["type"] == "suggestion" else "Summary generated."
+                    "content": "Question shown to recruiter."
                 })
 
-            # Continue the conversation
-            response = self.client.chat.completions.create(
-                model=self.model,
-                max_tokens=1024,
-                messages=[
-                    {"role": "system", "content": RECRUITER_SYSTEM_PROMPT},
-                    *self.messages
-                ],
-                tools=self.tools,
-                tool_choice="auto"
-            )
-            message = response.choices[0].message
+                # Transition to QUESTION_SHOWN
+                await self._set_state(ConversationState.QUESTION_SHOWN)
+            else:
+                # LLM didn't call tool (shouldn't happen with forced tool_choice, but handle gracefully)
+                if message.content:
+                    self.messages.append({"role": "assistant", "content": message.content})
+                await self._set_state(ConversationState.LISTENING)
 
-        # Add final response to messages
-        if message.content:
-            self.messages.append({"role": "assistant", "content": message.content})
+        except Exception as e:
+            logger.error(f"LLM error: {e}")
+            await self._set_state(ConversationState.LISTENING)
+
+        total_time = time.time() - start_time
+        logger.info(f"Total generation time: {total_time*1000:.0f}ms")
+
+        # Check if there's queued transcript to process
+        if self.queued_transcript and self.state == ConversationState.LISTENING:
+            merged = " ".join(text for text, _ in self.queued_transcript)
+            last_speaker = self.queued_transcript[-1][1]
+            self.queued_transcript = []
+            if not self._is_filler_only(merged):
+                asyncio.create_task(self._generate_question(merged, last_speaker))
 
         return outputs
 
+    async def notify_question_shown(self):
+        """Called when the frontend confirms a question has been displayed."""
+        if self.state == ConversationState.GENERATING:
+            # Question was just generated, transition to shown
+            await self._set_state(ConversationState.QUESTION_SHOWN)
+        logger.info("Frontend confirmed question shown")
+
     async def generate_summary(self) -> JobSummary | None:
         """Generate the final job requirements summary."""
-        # Build the full transcript context
+        self._cancel_turn_timer()
+
         full_transcript = "\n".join(self.transcript_buffer)
 
-        # Create the summary request
         summary_request = f"""{SUMMARY_GENERATION_PROMPT}
 
 Full conversation transcript:
@@ -266,7 +324,6 @@ Please use the generate_summary tool to create the structured summary."""
             tool_choice={"type": "function", "function": {"name": "generate_summary"}}
         )
 
-        # Process the response to extract the summary
         message = response.choices[0].message
         if message.tool_calls:
             for tool_call in message.tool_calls:
@@ -283,7 +340,6 @@ Please use the generate_summary tool to create the structured summary."""
 
     async def _safe_callback(self, callback: Callable, *args):
         """Safely invoke a callback, handling both sync and async callbacks."""
-        import asyncio
         result = callback(*args)
         if asyncio.iscoroutine(result):
             await result
@@ -294,26 +350,32 @@ Please use the generate_summary tool to create the structured summary."""
 
     def clear(self):
         """Clear the session state."""
+        self._cancel_turn_timer()
         self.messages = []
         self.transcript_buffer = []
-        self.pending_segments = []
-        self.last_transcript_time = 0
+        self.queued_transcript = []
+        self.state = ConversationState.LISTENING
+        self.current_question = None
+        self.last_speaker = None
+        self.last_final_transcript_time = 0
 
 
 class RecruiterAgent:
     """Factory for creating recruiter sessions."""
 
-    def __init__(self, model: str = "openai/gpt-oss-120b"):
+    def __init__(self, model: str = "llama-3.1-8b-instant"):
         self.model = model
 
     def create_session(
         self,
         on_suggestion: Callable[[SuggestedQuestion], Any] | None = None,
-        on_summary: Callable[[JobSummary], Any] | None = None
+        on_summary: Callable[[JobSummary], Any] | None = None,
+        on_state_change: Callable[[str], Any] | None = None
     ) -> RecruiterSession:
         """Create a new recruiter session."""
         return RecruiterSession(
             on_suggestion=on_suggestion,
             on_summary=on_summary,
+            on_state_change=on_state_change,
             model=self.model
         )

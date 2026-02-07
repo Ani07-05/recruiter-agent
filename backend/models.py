@@ -143,6 +143,12 @@ class SummaryMessage(BaseModel):
     data: JobSummary
 
 
+class StateChangeMessage(BaseModel):
+    """Agent state change notification."""
+    type: str = Field(default="state_change")
+    state: str = Field(description="New agent state: listening, generating, question_shown, processing_answer")
+
+
 class ErrorMessage(BaseModel):
     """Error message."""
     type: str = Field(default="error")

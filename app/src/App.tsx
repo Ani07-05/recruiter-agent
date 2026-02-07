@@ -4,17 +4,21 @@ import { useVoiceCall } from "./hooks/useVoiceCall";
 import { PreCallView } from "./components/PreCallView";
 import { InCallView } from "./components/InCallView";
 import { PostCallView } from "./components/PostCallView";
-import { SuggestedQuestion, JobSummary, TranscriptLine, AppPhase } from "./types";
+import { SuggestedQuestion, JobSummary, TranscriptLine, AppPhase, AgentState } from "./types";
 import { getApiUrl } from "./utils/api";
 
 function App() {
   // Phase state
   const [phase, setPhase] = useState<AppPhase>("pre-call");
 
-  // Core data
-  const [suggestions, setSuggestions] = useState<SuggestedQuestion[]>([]);
+  // Core data — single question at a time
+  const [currentSuggestion, setCurrentSuggestion] = useState<SuggestedQuestion | null>(null);
+  const [pastSuggestions, setPastSuggestions] = useState<SuggestedQuestion[]>([]);
   const [summary, setSummary] = useState<JobSummary | null>(null);
   const [transcriptLines, setTranscriptLines] = useState<TranscriptLine[]>([]);
+
+  // Agent state
+  const [agentState, setAgentState] = useState<AgentState>("listening");
 
   // Voice call state
   const [roomId, setRoomId] = useState<string>("");
@@ -23,7 +27,13 @@ function App() {
   const [joinUrl, setJoinUrl] = useState<string>("");
 
   const handleSuggestion = useCallback((suggestion: SuggestedQuestion) => {
-    setSuggestions((prev) => [suggestion, ...prev].slice(0, 10));
+    setCurrentSuggestion((prev) => {
+      // Push old question to history
+      if (prev) {
+        setPastSuggestions((past) => [prev, ...past].slice(0, 20));
+      }
+      return suggestion;
+    });
   }, []);
 
   const handleSummary = useCallback((newSummary: JobSummary) => {
@@ -31,16 +41,29 @@ function App() {
     setPhase("post-call");
   }, []);
 
+  const handleStateChange = useCallback((state: AgentState) => {
+    setAgentState(state);
+  }, []);
+
   const {
     connectionState,
     sendTranscript,
+    sendQuestionShown,
     endCall,
     clearSession,
     reconnect,
   } = useWebSocket({
     onSuggestion: handleSuggestion,
     onSummary: handleSummary,
+    onStateChange: handleStateChange,
   });
+
+  // Notify backend when a new question is displayed
+  useEffect(() => {
+    if (currentSuggestion) {
+      sendQuestionShown();
+    }
+  }, [currentSuggestion, sendQuestionShown]);
 
   // Fetch config on mount
   useEffect(() => {
@@ -148,18 +171,15 @@ function App() {
   // New session
   const handleNewSession = () => {
     clearSession();
-    setSuggestions([]);
+    setCurrentSuggestion(null);
+    setPastSuggestions([]);
     setSummary(null);
     setRoomId("");
     setJoinUrl("");
     setIsVoiceCallActive(false);
     setTranscriptLines([]);
+    setAgentState("listening");
     setPhase("pre-call");
-  };
-
-  // Dismiss suggestion
-  const handleDismissSuggestion = (index: number) => {
-    setSuggestions((prev) => prev.filter((_, i) => i !== index));
   };
 
   // Copy join URL
@@ -222,8 +242,9 @@ function App() {
           transcriptLines={transcriptLines}
           onSaveTranscript={handleSaveTranscript}
           onClearTranscript={handleClearTranscript}
-          suggestions={suggestions}
-          onDismissSuggestion={handleDismissSuggestion}
+          currentSuggestion={currentSuggestion}
+          pastSuggestions={pastSuggestions}
+          agentState={agentState}
           connectionState={connectionState}
           joinUrl={joinUrl}
         />

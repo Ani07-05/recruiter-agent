@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AgentState,
   ConnectionState,
   IncomingMessage,
   OutgoingMessage,
@@ -28,12 +29,14 @@ interface UseWebSocketOptions {
   maxReconnectAttempts?: number;
   onSuggestion?: (suggestion: SuggestedQuestion) => void;
   onSummary?: (summary: JobSummary) => void;
+  onStateChange?: (state: AgentState) => void;
   onError?: (error: string) => void;
 }
 
 interface UseWebSocketReturn {
   connectionState: ConnectionState;
   sendTranscript: (text: string, speaker?: string) => void;
+  sendQuestionShown: () => void;
   endCall: () => void;
   clearSession: () => void;
   reconnect: () => void;
@@ -45,6 +48,7 @@ export function useWebSocket({
   maxReconnectAttempts = 5,
   onSuggestion,
   onSummary,
+  onStateChange,
   onError,
 }: UseWebSocketOptions): UseWebSocketReturn {
   const [connectionState, setConnectionState] =
@@ -88,6 +92,9 @@ export function useWebSocket({
             case "cleared":
               console.log("Session cleared");
               break;
+            case "state_change":
+              onStateChange?.(message.state);
+              break;
             default:
               console.warn("Unknown message type:", message);
           }
@@ -125,7 +132,7 @@ export function useWebSocket({
       console.error("Failed to create WebSocket:", error);
       setConnectionState("error");
     }
-  }, [url, reconnectInterval, maxReconnectAttempts, onSuggestion, onSummary, onError]);
+  }, [url, reconnectInterval, maxReconnectAttempts, onSuggestion, onSummary, onStateChange, onError]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
@@ -162,6 +169,10 @@ export function useWebSocket({
     sendMessage({ type: "end_call" });
   }, [sendMessage]);
 
+  const sendQuestionShown = useCallback(() => {
+    sendMessage({ type: "question_shown" });
+  }, [sendMessage]);
+
   const clearSession = useCallback(() => {
     sendMessage({ type: "clear" });
   }, [sendMessage]);
@@ -183,6 +194,7 @@ export function useWebSocket({
   return {
     connectionState,
     sendTranscript,
+    sendQuestionShown,
     endCall,
     clearSession,
     reconnect,

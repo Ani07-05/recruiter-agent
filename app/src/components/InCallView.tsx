@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState, useCallback } from "react";
-import { SuggestedQuestion, TranscriptLine, ConnectionState } from "../types";
+import { SuggestedQuestion, TranscriptLine, ConnectionState, AgentState } from "../types";
 import { CallState } from "../hooks/useVoiceCall";
 import { AnimatedTranscriptLine } from "./TranscriptLine";
 import { CallControls } from "./CallControls";
@@ -19,15 +19,36 @@ interface InCallViewProps {
   onSaveTranscript: () => void;
   onClearTranscript: () => void;
 
-  // Suggestions
-  suggestions: SuggestedQuestion[];
-  onDismissSuggestion: (index: number) => void;
+  // Suggestions — single question at a time
+  currentSuggestion: SuggestedQuestion | null;
+  pastSuggestions: SuggestedQuestion[];
+
+  // Agent state
+  agentState: AgentState;
 
   // Connection
   connectionState: ConnectionState;
 
   // Join URL for sharing
   joinUrl?: string;
+}
+
+function AgentStateIndicator({ state }: { state: AgentState }) {
+  const config: Record<AgentState, { label: string; color: string; pulse: boolean }> = {
+    listening: { label: "Listening...", color: "bg-[var(--success)]", pulse: true },
+    generating: { label: "Generating question...", color: "bg-[var(--accent)]", pulse: true },
+    question_shown: { label: "Waiting for answer...", color: "bg-amber-400", pulse: false },
+    processing_answer: { label: "Processing answer...", color: "bg-[var(--accent)]", pulse: true },
+  };
+
+  const { label, color, pulse } = config[state];
+
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 bg-[var(--bg-secondary)] rounded-lg">
+      <div className={`w-2 h-2 rounded-full ${color} ${pulse ? "animate-pulse" : ""}`} />
+      <span className="text-xs font-medium text-[var(--text-secondary)]">{label}</span>
+    </div>
+  );
 }
 
 export function InCallView({
@@ -39,12 +60,14 @@ export function InCallView({
   transcriptLines,
   onSaveTranscript,
   onClearTranscript,
-  suggestions,
-  onDismissSuggestion,
+  currentSuggestion,
+  pastSuggestions,
+  agentState,
   connectionState,
   joinUrl,
 }: InCallViewProps) {
   const [linkCopied, setLinkCopied] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
 
   const handleCopyLink = () => {
     if (joinUrl) {
@@ -79,6 +102,7 @@ export function InCallView({
   }, []);
 
   const finalLines = transcriptLines.filter((l) => l.isFinal);
+  const allSuggestions = currentSuggestion ? [currentSuggestion, ...pastSuggestions] : pastSuggestions;
 
   return (
     <div className="h-screen flex flex-col animate-phase-in">
@@ -230,38 +254,72 @@ export function InCallView({
         {/* Right Panel: Suggestions (45%) */}
         <div className="flex flex-col bg-white" style={{ width: "45%" }}>
           {/* Coverage Tracker */}
-          <CoverageTracker suggestions={suggestions} />
+          <CoverageTracker suggestions={allSuggestions} />
 
-          {/* Suggestion cards */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-3">
-            {suggestions.length > 0 ? (
-              suggestions.map((suggestion, index) => (
+          {/* Agent State + Current Question */}
+          <div className="flex-1 overflow-y-auto p-4">
+            {/* State indicator */}
+            <div className="mb-3">
+              <AgentStateIndicator state={agentState} />
+            </div>
+
+            {/* Current question — prominent single card */}
+            {currentSuggestion ? (
+              <div className="mb-4">
                 <QuestionCard
-                  key={`${suggestion.question}-${index}`}
-                  question={suggestion}
-                  isNew={index === 0}
-                  onDismiss={() => onDismissSuggestion(index)}
+                  question={currentSuggestion}
+                  isNew={true}
                 />
-              ))
+              </div>
             ) : (
-              <div className="flex flex-col items-center justify-center h-full text-[var(--text-muted)]">
+              <div className="flex flex-col items-center justify-center py-12 text-[var(--text-muted)]">
                 <svg className="w-10 h-10 mb-3 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
-                <p className="text-sm font-medium">No suggestions yet</p>
-                <p className="text-xs mt-1">AI will suggest questions as the conversation flows</p>
+                <p className="text-sm font-medium">No question yet</p>
+                <p className="text-xs mt-1">AI will suggest a question when the hiring manager discusses the role</p>
+              </div>
+            )}
+
+            {/* Past questions — collapsible history */}
+            {pastSuggestions.length > 0 && (
+              <div className="border-t border-[var(--border-color)] pt-3">
+                <button
+                  onClick={() => setShowHistory(!showHistory)}
+                  className="flex items-center gap-2 text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors w-full"
+                >
+                  <svg
+                    className={`w-3 h-3 transition-transform ${showHistory ? "rotate-90" : ""}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                  <span>{pastSuggestions.length} previous question{pastSuggestions.length !== 1 ? "s" : ""}</span>
+                </button>
+                {showHistory && (
+                  <div className="mt-2 space-y-2">
+                    {pastSuggestions.map((suggestion, index) => (
+                      <div key={`past-${index}`} className="opacity-60">
+                        <QuestionCard
+                          question={suggestion}
+                          isNew={false}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
 
           {/* Bottom status */}
-          {suggestions.length > 0 && (
-            <div className="h-9 border-t border-[var(--border-color)] px-4 flex items-center justify-center flex-shrink-0">
-              <span className="text-xs text-[var(--text-muted)]">
-                {suggestions.length} suggestion{suggestions.length !== 1 ? "s" : ""}
-              </span>
-            </div>
-          )}
+          <div className="h-9 border-t border-[var(--border-color)] px-4 flex items-center justify-center flex-shrink-0">
+            <span className="text-xs text-[var(--text-muted)]">
+              {allSuggestions.length} question{allSuggestions.length !== 1 ? "s" : ""} total
+            </span>
+          </div>
         </div>
       </div>
     </div>

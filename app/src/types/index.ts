@@ -17,6 +17,9 @@ export type QuestionCategory =
   | "team_context";
 export type TimingHint = "ask_now" | "ask_soon" | "save_for_later";
 
+// Agent state machine
+export type AgentState = "listening" | "generating" | "question_shown" | "processing_answer";
+
 export interface SuggestedQuestion {
   question: string;
   options: QuestionOption[];
@@ -110,13 +113,19 @@ export interface ClearedMessage {
   type: "cleared";
 }
 
+export interface StateChangeMessage {
+  type: "state_change";
+  state: AgentState;
+}
+
 export type IncomingMessage =
   | SuggestionMessage
   | SummaryMessage
   | ErrorMessage
-  | ClearedMessage;
+  | ClearedMessage
+  | StateChangeMessage;
 
-export type OutgoingMessage = TranscriptMessage | EndCallMessage | { type: "clear" };
+export type OutgoingMessage = TranscriptMessage | EndCallMessage | { type: "clear" } | { type: "question_shown" };
 
 // Connection state
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "error";

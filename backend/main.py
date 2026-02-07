@@ -21,6 +21,7 @@ from models import (
     JobSummary,
     SuggestionMessage,
     SummaryMessage,
+    StateChangeMessage,
     ErrorMessage,
 )
 
@@ -76,9 +77,14 @@ class ConnectionManager:
             message = SummaryMessage(data=summary)
             await self._send_json(websocket, message.model_dump())
 
+        async def on_state_change(state: str):
+            message = StateChangeMessage(state=state)
+            await self._send_json(websocket, message.model_dump())
+
         session = agent.create_session(
             on_suggestion=on_suggestion,
-            on_summary=on_summary
+            on_summary=on_summary,
+            on_state_change=on_state_change
         )
 
         self.active_connections[websocket] = session
@@ -236,17 +242,25 @@ async def websocket_endpoint(websocket: WebSocket):
             if message_type == "transcript":
                 text = data.get("text", "")
                 speaker = data.get("speaker")
+                is_final = data.get("is_final", True)
 
                 if text.strip():
                     logger.info(f"Processing: [{speaker}] {text[:50]}...")
                     try:
-                        await session.process_transcript(text, speaker)
+                        await session.process_transcript(text, speaker, is_final=is_final)
                     except Exception as e:
                         logger.error(f"Error processing transcript: {e}")
                         await websocket.send_json(ErrorMessage(
                             message=str(e),
                             code="PROCESSING_ERROR"
                         ).model_dump())
+
+            elif message_type == "question_shown":
+                # Frontend confirms question was displayed to recruiter
+                try:
+                    await session.notify_question_shown()
+                except Exception as e:
+                    logger.error(f"Error in question_shown: {e}")
 
             elif message_type == "end_call":
                 logger.info("End call received, generating summary...")
