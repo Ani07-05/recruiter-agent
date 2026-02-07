@@ -51,7 +51,7 @@ class RecruiterSession:
         on_suggestion: Callable[[SuggestedQuestion], Any] | None = None,
         on_summary: Callable[[JobSummary], Any] | None = None,
         on_state_change: Callable[[str], Any] | None = None,
-        model: str = "llama-3.1-8b-instant"
+        model: str = "llama-3.3-70b-versatile"
     ):
         api_key = os.environ.get("GROQ_API_KEY")
         if not api_key:
@@ -79,6 +79,9 @@ class RecruiterSession:
         self.last_final_transcript_time: float = 0
         self._turn_timer_task: asyncio.Task | None = None
         self.turn_silence_threshold: float = 1.5  # seconds of silence = turn complete
+
+        # Generation lock — prevents concurrent LLM calls
+        self._generation_lock = asyncio.Lock()
 
     async def _set_state(self, new_state: ConversationState):
         """Transition to a new state and notify."""
@@ -182,6 +185,7 @@ class RecruiterSession:
                 return
 
             # Turn is complete — flush queued transcript and generate
+            # Must check state AND acquire lock to prevent races
             if self.queued_transcript and self.state == ConversationState.LISTENING:
                 merged_text = " ".join(text for text, _ in self.queued_transcript)
                 speaker = self.queued_transcript[-1][1]  # Use last speaker
@@ -215,104 +219,150 @@ class RecruiterSession:
             self.messages = self.messages[-max_msgs:]
 
     async def _generate_question(self, text: str, speaker: str | None = None, is_answer: bool = False) -> list[dict]:
-        """Generate a single question via LLM. No multi-round tool loop."""
-        start_time = time.time()
+        """Generate a single question via LLM with streaming for speed."""
+        # Acquire lock to prevent concurrent generation (race condition fix)
+        async with self._generation_lock:
+            # Re-check state under lock — another call may have started generating
+            if self.state == ConversationState.GENERATING:
+                # Already generating, queue this text instead
+                self.queued_transcript.append((text, speaker))
+                logger.info(f"Generation already in progress, queued. Queue size: {len(self.queued_transcript)}")
+                return []
 
-        await self._set_state(ConversationState.GENERATING)
+            start_time = time.time()
 
-        # Build the condensed context message (transcript + asked questions)
-        context_msg = build_context_message(
-            transcript=self._build_condensed_transcript(),
-            asked_questions=self.asked_questions,
-            new_text=text,
-            is_answer=is_answer,
-        )
+            await self._set_state(ConversationState.GENERATING)
 
-        # Trim old LLM exchanges before adding new ones
-        self._trim_messages()
-
-        self.messages.append({"role": "user", "content": context_msg})
-
-        outputs = []
-
-        try:
-            llm_start = time.time()
-            logger.info(f"Calling LLM ({self.model}), {len(self.messages)} msgs...")
-
-            response = self.client.chat.completions.create(
-                model=self.model,
-                max_tokens=256,
-                messages=[
-                    {"role": "system", "content": RECRUITER_SYSTEM_PROMPT},
-                    *self.messages
-                ],
-                tools=self.tools,
-                tool_choice={"type": "function", "function": {"name": "suggest_question"}}
+            # Build the condensed context message (transcript + asked questions)
+            context_msg = build_context_message(
+                transcript=self._build_condensed_transcript(),
+                asked_questions=self.asked_questions,
+                new_text=text,
+                is_answer=is_answer,
             )
 
-            llm_time = time.time() - llm_start
-            logger.info(f"LLM responded in {llm_time*1000:.0f}ms")
+            # Trim old LLM exchanges before adding new ones
+            self._trim_messages()
 
-            message = response.choices[0].message
+            self.messages.append({"role": "user", "content": context_msg})
 
-            # Process exactly ONE tool call — no loop
-            if message.tool_calls:
-                tool_call = message.tool_calls[0]  # Only first
-                tool_name = tool_call.function.name
-                tool_input = json.loads(tool_call.function.arguments)
+            outputs = []
 
-                result = process_tool_call(tool_name, tool_input)
-                outputs.append(result)
+            try:
+                llm_start = time.time()
+                messages_payload = [
+                    {"role": "system", "content": RECRUITER_SYSTEM_PROMPT},
+                    *self.messages
+                ]
+                logger.info(f"Calling LLM ({self.model}), {len(self.messages)} msgs, streaming...")
 
-                if result["type"] == "suggestion" and self.on_suggestion:
-                    suggestion = SuggestedQuestion(**result["data"])
-                    self.current_question = suggestion
-                    # Track the question so we never re-ask it
-                    self.asked_questions.append(suggestion.question)
-                    logger.info(f"Question #{len(self.asked_questions)}: {suggestion.question[:80]}...")
-                    await self._safe_callback(self.on_suggestion, suggestion)
+                # Run the synchronous streaming call in a thread to avoid blocking
+                def _stream_llm():
+                    return self.client.chat.completions.create(
+                        model=self.model,
+                        max_tokens=256,
+                        temperature=0.5,
+                        messages=messages_payload,
+                        tools=self.tools,
+                        tool_choice={"type": "function", "function": {"name": "suggest_question"}},
+                        stream=True,
+                    )
 
-                # Add to message history
-                self.messages.append({
-                    "role": "assistant",
-                    "content": message.content,
-                    "tool_calls": [{
-                        "id": tool_call.id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_call.function.name,
-                            "arguments": tool_call.function.arguments
-                        }
-                    }]
-                })
-                self.messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": "Question shown to recruiter."
-                })
+                stream = await asyncio.to_thread(_stream_llm)
 
-                # Transition to QUESTION_SHOWN
-                await self._set_state(ConversationState.QUESTION_SHOWN)
-            else:
-                # LLM didn't call tool (shouldn't happen with forced tool_choice, but handle gracefully)
-                if message.content:
-                    self.messages.append({"role": "assistant", "content": message.content})
+                # Accumulate streamed tool call chunks
+                tool_call_id = None
+                tool_call_name = None
+                tool_call_args = ""
+                content_text = ""
+                first_chunk_time = None
+
+                def _consume_stream():
+                    nonlocal tool_call_id, tool_call_name, tool_call_args, content_text, first_chunk_time
+                    for chunk in stream:
+                        if first_chunk_time is None:
+                            first_chunk_time = time.time()
+                        choice = chunk.choices[0] if chunk.choices else None
+                        if not choice:
+                            continue
+                        delta = choice.delta
+                        # Accumulate content text (usually empty with forced tool_choice)
+                        if delta.content:
+                            content_text += delta.content
+                        # Accumulate tool call
+                        if delta.tool_calls:
+                            tc = delta.tool_calls[0]
+                            if tc.id:
+                                tool_call_id = tc.id
+                            if tc.function:
+                                if tc.function.name:
+                                    tool_call_name = tc.function.name
+                                if tc.function.arguments:
+                                    tool_call_args += tc.function.arguments
+
+                await asyncio.to_thread(_consume_stream)
+
+                ttft = (first_chunk_time - llm_start) * 1000 if first_chunk_time else 0
+                llm_time = time.time() - llm_start
+                logger.info(f"LLM streamed in {llm_time*1000:.0f}ms (TTFT: {ttft:.0f}ms)")
+
+                # Process the accumulated tool call
+                if tool_call_id and tool_call_name and tool_call_args:
+                    tool_input = json.loads(tool_call_args)
+
+                    result = process_tool_call(tool_call_name, tool_input)
+                    outputs.append(result)
+
+                    if result["type"] == "suggestion" and self.on_suggestion:
+                        suggestion = SuggestedQuestion(**result["data"])
+                        self.current_question = suggestion
+                        # Track the question so we never re-ask it
+                        self.asked_questions.append(suggestion.question)
+                        logger.info(f"Question #{len(self.asked_questions)}: {suggestion.question[:80]}...")
+                        await self._safe_callback(self.on_suggestion, suggestion)
+
+                    # Add to message history
+                    self.messages.append({
+                        "role": "assistant",
+                        "content": content_text or None,
+                        "tool_calls": [{
+                            "id": tool_call_id,
+                            "type": "function",
+                            "function": {
+                                "name": tool_call_name,
+                                "arguments": tool_call_args
+                            }
+                        }]
+                    })
+                    self.messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": "Question shown to recruiter."
+                    })
+
+                    # Transition to QUESTION_SHOWN
+                    await self._set_state(ConversationState.QUESTION_SHOWN)
+                else:
+                    # LLM didn't call tool (shouldn't happen with forced tool_choice, but handle gracefully)
+                    if content_text:
+                        self.messages.append({"role": "assistant", "content": content_text})
+                    await self._set_state(ConversationState.LISTENING)
+
+            except Exception as e:
+                logger.error(f"LLM error: {e}")
                 await self._set_state(ConversationState.LISTENING)
 
-        except Exception as e:
-            logger.error(f"LLM error: {e}")
-            await self._set_state(ConversationState.LISTENING)
+            total_time = time.time() - start_time
+            logger.info(f"Total generation time: {total_time*1000:.0f}ms")
 
-        total_time = time.time() - start_time
-        logger.info(f"Total generation time: {total_time*1000:.0f}ms")
-
-        # Check if there's queued transcript to process
+        # Outside the lock: check if there's queued transcript to process
         if self.queued_transcript and self.state == ConversationState.LISTENING:
             merged = " ".join(text for text, _ in self.queued_transcript)
             last_speaker = self.queued_transcript[-1][1]
             self.queued_transcript = []
             if not self._is_filler_only(merged):
-                asyncio.create_task(self._generate_question(merged, last_speaker))
+                # Directly await instead of create_task to go through the lock properly
+                await self._generate_question(merged, last_speaker)
 
         return outputs
 
@@ -389,7 +439,7 @@ Please use the generate_summary tool to create the structured summary."""
 class RecruiterAgent:
     """Factory for creating recruiter sessions."""
 
-    def __init__(self, model: str = "llama-3.1-8b-instant"):
+    def __init__(self, model: str = "llama-3.3-70b-versatile"):
         self.model = model
 
     def create_session(
