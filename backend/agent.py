@@ -45,24 +45,121 @@ class RecruiterSession:
         self.on_summary = on_summary
         self.transcript_buffer: list[str] = []
         self.tools = convert_tools_to_openai_format(ALL_TOOLS)
+        
+        # Buffering for real-time transcripts
+        self.pending_segments: list[tuple[str, str | None]] = []  # (text, speaker)
+        self.min_words_to_process = 8  # Only process if buffer has 8+ words
+        self.last_transcript_time = 0
+        self.flush_timeout_seconds = 2.5  # Flush after 2.5s of silence
 
     def _format_transcript_entry(self, text: str, speaker: str | None = None) -> str:
         """Format a transcript entry with optional speaker label."""
         if speaker:
             return f"[{speaker}]: {text}"
         return text
+    
+    def _count_words(self, segments: list[tuple[str, str | None]]) -> int:
+        """Count total words in pending segments."""
+        return sum(len(text.split()) for text, _ in segments)
+    
+    def _is_filler_only(self, text: str) -> bool:
+        """Check if text is only filler words (uh, yeah, mhmm, okay, etc)."""
+        filler_words = {
+            "uh", "um", "ah", "hmm", "mhmm", "uh-huh", "yeah", "yep", "yes", "no",
+            "okay", "ok", "alright", "sure", "right", "got", "gotcha", "nice",
+            "oh", "well", "so", "like", "wait", "but", "and", "the", "is", "are",
+            "it", "to", "from", "in", "on", "at", "for", "with", "this", "that"
+        }
+        words = text.lower().strip().replace(".", "").replace("?", "").replace("!", "").split()
+        if not words:
+            return True
+        # If all words are fillers, it's filler-only
+        return all(word in filler_words for word in words)
+    
+    def _should_flush_buffer(self) -> bool:
+        """Determine if we should flush pending segments to LLM."""
+        import time
+        
+        if not self.pending_segments:
+            return False
+        
+        # Check if we have enough words
+        word_count = self._count_words(self.pending_segments)
+        if word_count < self.min_words_to_process:
+            # Not enough words yet, check if silence timeout reached
+            time_since_last = time.time() - self.last_transcript_time
+            return time_since_last >= self.flush_timeout_seconds
+        
+        # We have enough words, flush
+        return True
+    
+    def _merge_pending_segments(self) -> str | None:
+        """Merge pending segments into a single transcript entry, grouped by speaker."""
+        if not self.pending_segments:
+            return None
+        
+        # Group consecutive segments by speaker
+        merged = []
+        current_speaker = None
+        current_text = []
+        
+        for text, speaker in self.pending_segments:
+            if speaker != current_speaker:
+                if current_text:
+                    merged_text = " ".join(current_text).strip()
+                    if merged_text and not self._is_filler_only(merged_text):
+                        merged.append(self._format_transcript_entry(merged_text, current_speaker))
+                current_speaker = speaker
+                current_text = [text]
+            else:
+                current_text.append(text)
+        
+        # Don't forget the last group
+        if current_text:
+            merged_text = " ".join(current_text).strip()
+            if merged_text and not self._is_filler_only(merged_text):
+                merged.append(self._format_transcript_entry(merged_text, current_speaker))
+        
+        return "\n".join(merged) if merged else None
 
     async def process_transcript(self, text: str, speaker: str | None = None) -> list[dict]:
         """Process a transcript segment and potentially generate suggestions.
+        
+        Uses buffering to accumulate short fragments before sending to LLM.
+        Only processes when enough words accumulate or after a pause in speech.
 
         Returns a list of tool outputs (suggestions or summaries).
         """
-        # Add to buffer
-        entry = self._format_transcript_entry(text, speaker)
-        self.transcript_buffer.append(entry)
+        import time
+        
+        # Skip completely empty or whitespace-only text
+        if not text or not text.strip():
+            return []
+        
+        # Skip if text is only filler words
+        if self._is_filler_only(text):
+            return []
+        
+        # Add to pending buffer
+        self.pending_segments.append((text.strip(), speaker))
+        self.last_transcript_time = time.time()
+        
+        # Check if we should flush
+        if not self._should_flush_buffer():
+            return []  # Keep buffering
+        
+        # Merge and process pending segments
+        merged_entry = self._merge_pending_segments()
+        self.pending_segments = []  # Clear buffer
+        
+        if not merged_entry:
+            return []  # Nothing substantive to process
+        
+        # Add to permanent transcript buffer
+        self.transcript_buffer.append(merged_entry)
 
-        # Create the user message with the new transcript
-        user_message = f"New transcript segment:\n{entry}"
+        # Create the user message with the merged transcript
+        user_message = f"New transcript segment:\n{merged_entry}"
 
         self.messages.append({"role": "user", "content": user_message})
 
@@ -199,6 +296,8 @@ Please use the generate_summary tool to create the structured summary."""
         """Clear the session state."""
         self.messages = []
         self.transcript_buffer = []
+        self.pending_segments = []
+        self.last_transcript_time = 0
 
 
 class RecruiterAgent:
