@@ -32,7 +32,7 @@ class RecruiterSession:
         self,
         on_suggestion: Callable[[SuggestedQuestion], Any] | None = None,
         on_summary: Callable[[JobSummary], Any] | None = None,
-        model: str = "openai/gpt-oss-20b"
+        model: str = "openai/gpt-oss-120b"
     ):
         api_key = os.environ.get("GROQ_API_KEY")
         if not api_key:
@@ -204,7 +204,7 @@ Please use the generate_summary tool to create the structured summary."""
 class RecruiterAgent:
     """Factory for creating recruiter sessions."""
 
-    def __init__(self, model: str = "openai/gpt-oss-20b"):
+    def __init__(self, model: str = "openai/gpt-oss-120b"):
         self.model = model
 
     def create_session(
