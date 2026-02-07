@@ -66,8 +66,35 @@ export function useVoiceCall({
     console.log("[Transcript] Connecting to Deepgram with key:", apiKey.substring(0, 8) + "...");
 
     return new Promise((resolve, reject) => {
+      const dgParams = new URLSearchParams({
+        model: "nova-2",
+        punctuate: "true",
+        interim_results: "true",
+        encoding: "linear16",
+        sample_rate: "16000",
+        smart_format: "true",
+        language: "en",
+      });
+
+      // Boost domain-specific keywords that Deepgram may mis-transcribe
+      const keywords = [
+        "pentesting:2",
+        "penetration testing:2",
+        "pen testing:2",
+        "pentest:2",
+        "cybersecurity:1",
+        "red team:1",
+        "blue team:1",
+        "vulnerability:1",
+        "OWASP:2",
+        "CTF:2",
+        "exploit:1",
+        "infosec:1",
+      ];
+      keywords.forEach((kw) => dgParams.append("keywords", kw));
+
       const ws = new WebSocket(
-        `wss://api.deepgram.com/v1/listen?model=nova-2&punctuate=true&interim_results=true&encoding=linear16&sample_rate=16000`,
+        `wss://api.deepgram.com/v1/listen?${dgParams.toString()}`,
         ["token", apiKey]
       );
 
@@ -179,8 +206,35 @@ export function useVoiceCall({
     const source = audioContext.createMediaStreamSource(stream);
     const processor = audioContext.createScriptProcessor(4096, 1, 1);
 
+    const dgParams = new URLSearchParams({
+      model: "nova-2",
+      punctuate: "true",
+      interim_results: "true",
+      encoding: "linear16",
+      sample_rate: "16000",
+      smart_format: "true",
+      language: "en",
+    });
+
+    // Boost domain-specific keywords (same as local audio)
+    const keywords = [
+      "pentesting:2",
+      "penetration testing:2",
+      "pen testing:2",
+      "pentest:2",
+      "cybersecurity:1",
+      "red team:1",
+      "blue team:1",
+      "vulnerability:1",
+      "OWASP:2",
+      "CTF:2",
+      "exploit:1",
+      "infosec:1",
+    ];
+    keywords.forEach((kw) => dgParams.append("keywords", kw));
+
     const ws = new WebSocket(
-      `wss://api.deepgram.com/v1/listen?model=nova-2&punctuate=true&interim_results=true&encoding=linear16&sample_rate=16000`,
+      `wss://api.deepgram.com/v1/listen?${dgParams.toString()}`,
       ["token", apiKey]
     );
 

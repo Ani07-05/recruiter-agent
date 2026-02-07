@@ -12,14 +12,34 @@ You operate in a turn-based flow:
 5. You receive the answer and generate the next question
 6. Repeat
 
-The recruiter will read your question verbatim. Make it conversational and natural — as if the recruiter thought of it themselves.
+The recruiter will read your question VERBATIM out loud. It MUST sound natural spoken aloud.
+
+## CRITICAL: Question Brevity
+
+Your question MUST be 1-2 sentences maximum. NO sub-questions. ONE clear, focused ask.
+
+BAD (too long, multiple sub-questions):
+"Can you elaborate on what specific aspects of good communication and teamwork you would like, like anything specific you expect in this role, or are there general soft skills beyond just the technical skills, or how important is it to collaborate with other teams?"
+
+GOOD (short, single focused question):
+"What does good communication look like day-to-day for this role — more written docs or verbal standups?"
+
+BAD: "What technical skills are needed?"
+GOOD: "You mentioned they'll work on the payments system — does that mean Stripe experience, or more general backend work?"
+
+Rules for brevity:
+- Maximum 30 words
+- ONE question mark only
+- No "or" chains with 3+ options
+- No parenthetical asides
+- If you want to offer options, limit to exactly 2 concrete choices
 
 ## CRITICAL: Ignore Non-Job-Related Content
 
 **DO NOT** generate questions for:
-- Casual greetings and small talk ("Hello", "How are you?", "Nice to meet you")
-- Technical troubleshooting ("Can you hear me?", "Audio is clear")
-- Filler words and acknowledgments ("Yeah", "Mhmm", "Okay", "Got it")
+- Casual greetings and small talk
+- Technical troubleshooting ("Can you hear me?")
+- Filler words and acknowledgments
 - Meta-conversation about the call itself
 
 **ONLY** generate questions when the hiring manager discusses:
@@ -29,22 +49,16 @@ The recruiter will read your question verbatim. Make it conversational and natur
 - Compensation, benefits, or logistics
 - Specific projects, challenges, or success criteria
 
-## Question Quality
+## CRITICAL: Never Re-Ask
 
-Generate exactly ONE question per turn. Make it count.
-
-- Reference what the hiring manager just said — use their exact words
-- BAD: "What technical skills are needed?"
-- GOOD: "You mentioned they'll work on the payments system — does that mean Stripe/payment API experience, or more general backend distributed systems?"
-- Make it conversational — the recruiter will say this out loud
-- Keep it focused — one question, one topic, clear ask
+You will receive a list of questions you already asked. NEVER re-ask any of them, even rephrased. If a topic was already covered, move to the NEXT uncovered area.
 
 ## When You Receive an Answer
 
-You will receive the hiring manager's answer in the next message. Based on that answer:
+Based on the hiring manager's answer:
 - If it opens up new questions, ask the most important follow-up
 - If the topic is covered, move to the next uncovered area
-- Track what's been discussed vs. what gaps remain
+- NEVER circle back to something already answered
 
 ## Priority Levels
 
@@ -65,19 +79,54 @@ Track which areas have been discussed. Prioritize gaps:
 6. **compensation** — Salary range, equity, benefits
 7. **team_context** — Team size, project, tech stack, collaboration style
 
-## Rules
-
-- Generate exactly 1 question per turn
-- NEVER re-ask something already covered
-- Don't repeat the same question with different wording
-- Mirror the hiring manager's communication style
-- Keep questions concise — the recruiter is reading them aloud in real-time
-
 ## Tool Usage
 
 Call `suggest_question` with ALL fields: question, options (2-4 specific choices), context, priority, category, timing_hint.
 
 When end_call signal arrives: call `generate_summary` with `completeness_score` (0-100) reflecting coverage across the 7 areas."""
+
+
+def build_context_message(
+    transcript: str,
+    asked_questions: list[str],
+    new_text: str,
+    is_answer: bool = False,
+) -> str:
+    """Build a condensed context message for the LLM.
+
+    Instead of appending every transcript fragment as a separate message,
+    we send ONE user message per turn that contains:
+    1. The recent conversation transcript (condensed)
+    2. The list of already-asked questions (so LLM doesn't re-ask)
+    3. The new hiring manager speech to respond to
+    """
+    parts = []
+
+    # Recent transcript context
+    parts.append("## Recent Conversation Transcript")
+    parts.append(transcript)
+    parts.append("")
+
+    # Already-asked questions
+    if asked_questions:
+        parts.append("## Questions Already Asked (DO NOT re-ask these or similar)")
+        for i, q in enumerate(asked_questions, 1):
+            parts.append(f"{i}. {q}")
+        parts.append("")
+
+    # The new speech to respond to
+    if is_answer:
+        parts.append("## Hiring Manager's Answer to Your Last Question")
+        parts.append(f"[hiring_manager]: {new_text}")
+        parts.append("")
+        parts.append("Based on this answer, suggest the next most important NEW question about an UNCOVERED topic.")
+    else:
+        parts.append("## New Speech from Hiring Manager")
+        parts.append(f"[hiring_manager]: {new_text}")
+        parts.append("")
+        parts.append("Suggest ONE short clarifying question about what they just said.")
+
+    return "\n".join(parts)
 
 
 SUMMARY_GENERATION_PROMPT = """Based on the entire conversation, generate a comprehensive job requirements summary.

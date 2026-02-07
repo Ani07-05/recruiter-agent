@@ -11,10 +11,13 @@ from typing import Callable, Any
 from groq import Groq
 
 from tools import ALL_TOOLS, process_tool_call
-from prompts import RECRUITER_SYSTEM_PROMPT, SUMMARY_GENERATION_PROMPT
+from prompts import RECRUITER_SYSTEM_PROMPT, SUMMARY_GENERATION_PROMPT, build_context_message
 from models import SuggestedQuestion, JobSummary
 
 logger = logging.getLogger(__name__)
+
+# Max LLM exchanges (assistant+tool pairs) to keep in self.messages
+MAX_MESSAGE_HISTORY = 3
 
 
 def convert_tools_to_openai_format(tools: list[dict]) -> list[dict]:
@@ -56,12 +59,15 @@ class RecruiterSession:
 
         self.client = Groq(api_key=api_key)
         self.model = model
-        self.messages: list[dict] = []
+        self.messages: list[dict] = []  # Only keeps recent LLM exchanges (trimmed)
         self.on_suggestion = on_suggestion
         self.on_summary = on_summary
         self.on_state_change = on_state_change
-        self.transcript_buffer: list[str] = []
+        self.transcript_buffer: list[str] = []  # Full rolling transcript (ground truth)
         self.tools = convert_tools_to_openai_format(ALL_TOOLS)
+
+        # Question tracking — prevents re-asking and gives LLM context
+        self.asked_questions: list[str] = []
 
         # State machine
         self.state = ConversationState.LISTENING
@@ -120,11 +126,8 @@ class RecruiterSession:
         # --- Recruiter speech: record only, never trigger LLM ---
         if speaker == "recruiter":
             logger.info(f"Recruiter spoke: '{text[:60]}...' (recorded, no LLM)")
-            # Add to message history so LLM has context
-            self.messages.append({
-                "role": "user",
-                "content": f"[Recruiter said]: {text}"
-            })
+            # Recruiter speech is in transcript_buffer — that's enough context.
+            # Do NOT add to self.messages (pollutes LLM history with noise).
             return []
 
         # --- Hiring manager speech ---
@@ -196,29 +199,49 @@ class RecruiterSession:
             self._turn_timer_task.cancel()
             self._turn_timer_task = None
 
+    def _build_condensed_transcript(self, limit: int = 30) -> str:
+        """Build a condensed transcript from the last N entries."""
+        recent = self.transcript_buffer[-limit:]
+        return "\n".join(recent)
+
+    def _trim_messages(self):
+        """Keep only the last MAX_MESSAGE_HISTORY LLM exchanges.
+
+        Each exchange is: 1 user message + 1 assistant message + 1 tool message = 3 messages.
+        We keep the last MAX_MESSAGE_HISTORY exchanges (i.e., 3 * MAX_MESSAGE_HISTORY messages).
+        """
+        max_msgs = MAX_MESSAGE_HISTORY * 3
+        if len(self.messages) > max_msgs:
+            self.messages = self.messages[-max_msgs:]
+
     async def _generate_question(self, text: str, speaker: str | None = None, is_answer: bool = False) -> list[dict]:
         """Generate a single question via LLM. No multi-round tool loop."""
         start_time = time.time()
 
         await self._set_state(ConversationState.GENERATING)
 
-        # Build the user message
-        if is_answer:
-            user_message = f"The hiring manager answered your previous question:\n[hiring_manager]: {text}\n\nBased on this answer and the conversation so far, suggest the next most important clarifying question."
-        else:
-            user_message = f"New transcript from hiring manager:\n[hiring_manager]: {text}"
+        # Build the condensed context message (transcript + asked questions)
+        context_msg = build_context_message(
+            transcript=self._build_condensed_transcript(),
+            asked_questions=self.asked_questions,
+            new_text=text,
+            is_answer=is_answer,
+        )
 
-        self.messages.append({"role": "user", "content": user_message})
+        # Trim old LLM exchanges before adding new ones
+        self._trim_messages()
+
+        self.messages.append({"role": "user", "content": context_msg})
 
         outputs = []
 
         try:
             llm_start = time.time()
-            logger.info(f"Calling LLM ({self.model})...")
+            logger.info(f"Calling LLM ({self.model}), {len(self.messages)} msgs...")
 
             response = self.client.chat.completions.create(
                 model=self.model,
-                max_tokens=512,
+                max_tokens=256,
                 messages=[
                     {"role": "system", "content": RECRUITER_SYSTEM_PROMPT},
                     *self.messages
@@ -244,7 +267,9 @@ class RecruiterSession:
                 if result["type"] == "suggestion" and self.on_suggestion:
                     suggestion = SuggestedQuestion(**result["data"])
                     self.current_question = suggestion
-                    logger.info(f"Question: {suggestion.question[:80]}...")
+                    # Track the question so we never re-ask it
+                    self.asked_questions.append(suggestion.question)
+                    logger.info(f"Question #{len(self.asked_questions)}: {suggestion.question[:80]}...")
                     await self._safe_callback(self.on_suggestion, suggestion)
 
                 # Add to message history
@@ -354,6 +379,7 @@ Please use the generate_summary tool to create the structured summary."""
         self.messages = []
         self.transcript_buffer = []
         self.queued_transcript = []
+        self.asked_questions = []
         self.state = ConversationState.LISTENING
         self.current_question = None
         self.last_speaker = None
