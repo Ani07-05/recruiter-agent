@@ -67,7 +67,7 @@ export function useVoiceCall({
 
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(
-        `wss://api.deepgram.com/v1/listen?model=nova-2&punctuate=true&interim_results=true&encoding=linear16&sample_rate=16000&smart_format=true&language=en`,
+        `wss://api.deepgram.com/v1/listen?model=nova-3&punctuate=true&interim_results=true&encoding=linear16&sample_rate=16000&smart_format=true&language=en&endpointing=400&utterance_end_ms=1500`,
         ["token", apiKey]
       );
 
@@ -180,7 +180,7 @@ export function useVoiceCall({
     const processor = audioContext.createScriptProcessor(4096, 1, 1);
 
     const ws = new WebSocket(
-      `wss://api.deepgram.com/v1/listen?model=nova-2&punctuate=true&interim_results=true&encoding=linear16&sample_rate=16000&smart_format=true&language=en`,
+      `wss://api.deepgram.com/v1/listen?model=nova-3&punctuate=true&interim_results=true&encoding=linear16&sample_rate=16000&smart_format=true&language=en&endpointing=400&utterance_end_ms=1500`,
       ["token", apiKey]
     );
 

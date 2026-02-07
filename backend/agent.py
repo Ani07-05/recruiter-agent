@@ -300,11 +300,21 @@ class RecruiterSession:
                                 if tc.function.arguments:
                                     tool_call_args += tc.function.arguments
 
-                await asyncio.to_thread(_consume_stream)
+                # Consume stream with a timeout to prevent hanging
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(_consume_stream),
+                        timeout=15.0  # 15 second timeout for streaming
+                    )
+                except asyncio.TimeoutError:
+                    logger.error("LLM streaming timed out after 15s")
+                    await self._set_state(ConversationState.LISTENING)
+                    return outputs
 
                 ttft = (first_chunk_time - llm_start) * 1000 if first_chunk_time else 0
                 llm_time = time.time() - llm_start
                 logger.info(f"LLM streamed in {llm_time*1000:.0f}ms (TTFT: {ttft:.0f}ms)")
+                logger.info(f"Stream result: tool_call_id={tool_call_id}, name={tool_call_name}, args_len={len(tool_call_args)}, content_len={len(content_text)}")
 
                 # Process the accumulated tool call
                 if tool_call_id and tool_call_name and tool_call_args:
@@ -349,7 +359,7 @@ class RecruiterSession:
                     await self._set_state(ConversationState.LISTENING)
 
             except Exception as e:
-                logger.error(f"LLM error: {e}")
+                logger.error(f"LLM error: {e}", exc_info=True)
                 await self._set_state(ConversationState.LISTENING)
 
             total_time = time.time() - start_time

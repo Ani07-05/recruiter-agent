@@ -103,6 +103,7 @@ function App() {
       });
 
       if (line.isFinal && line.text.trim()) {
+        console.log(`[Agent] Sending transcript to backend: [${line.speaker}] ${line.text}`);
         sendTranscript(line.text, line.speaker);
       }
     },

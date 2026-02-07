@@ -249,7 +249,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     try:
                         await session.process_transcript(text, speaker, is_final=is_final)
                     except Exception as e:
-                        logger.error(f"Error processing transcript: {e}")
+                        logger.error(f"Error processing transcript: {e}", exc_info=True)
                         await websocket.send_json(ErrorMessage(
                             message=str(e),
                             code="PROCESSING_ERROR"

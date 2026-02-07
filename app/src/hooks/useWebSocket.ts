@@ -149,7 +149,7 @@ export function useWebSocket({
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(message));
     } else {
-      console.warn("WebSocket not connected, message not sent");
+      console.warn("WebSocket not connected (state:", wsRef.current?.readyState, "), message dropped:", message.type);
     }
   }, []);
 
