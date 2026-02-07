@@ -225,6 +225,7 @@ function App() {
           suggestions={suggestions}
           onDismissSuggestion={handleDismissSuggestion}
           connectionState={connectionState}
+          joinUrl={joinUrl}
         />
       );
 

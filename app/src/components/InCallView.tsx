@@ -25,6 +25,9 @@ interface InCallViewProps {
 
   // Connection
   connectionState: ConnectionState;
+
+  // Join URL for sharing
+  joinUrl?: string;
 }
 
 export function InCallView({
@@ -39,7 +42,17 @@ export function InCallView({
   suggestions,
   onDismissSuggestion,
   connectionState,
+  joinUrl,
 }: InCallViewProps) {
+  const [linkCopied, setLinkCopied] = useState(false);
+
+  const handleCopyLink = () => {
+    if (joinUrl) {
+      navigator.clipboard.writeText(joinUrl);
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2000);
+    }
+  };
   const scrollRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [userHasScrolled, setUserHasScrolled] = useState(false);
@@ -104,6 +117,39 @@ export function InCallView({
           participantName="Hiring Manager"
         />
       </div>
+
+      {/* Join URL banner — shown when remote hasn't connected */}
+      {joinUrl && !isRemoteConnected && (
+        <div className="bg-[var(--accent-light)] border-b border-[var(--border-color)] px-4 py-2.5 flex items-center justify-between flex-shrink-0 animate-fade-in">
+          <div className="flex items-center gap-2 min-w-0">
+            <svg className="w-4 h-4 text-[var(--accent)] flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+            </svg>
+            <span className="text-xs font-medium text-[var(--accent)]">Share this link with the hiring manager to join:</span>
+            <span className="text-xs font-mono text-[var(--text-secondary)] truncate">{joinUrl}</span>
+          </div>
+          <button
+            onClick={handleCopyLink}
+            className="ml-3 px-3 py-1 text-xs font-medium bg-[var(--accent)] text-white rounded hover:bg-[var(--accent-hover)] transition-colors flex-shrink-0 flex items-center gap-1.5"
+          >
+            {linkCopied ? (
+              <>
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+                Copied!
+              </>
+            ) : (
+              <>
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+                Copy Link
+              </>
+            )}
+          </button>
+        </div>
+      )}
 
       {/* Main Content */}
       <div className="flex flex-1 min-h-0">
