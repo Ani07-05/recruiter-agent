@@ -23,6 +23,8 @@ from models import (
     SummaryMessage,
     StateChangeMessage,
     ErrorMessage,
+    CompletionStatus,
+    CompletionStatusMessage,
 )
 
 # Configure logging
@@ -261,6 +263,32 @@ async def websocket_endpoint(websocket: WebSocket):
                     await session.notify_question_shown()
                 except Exception as e:
                     logger.error(f"Error in question_shown: {e}")
+
+            elif message_type == "generate_question":
+                # Manual question generation requested
+                logger.info("Manual question generation requested")
+                try:
+                    await session.generate_question_on_demand()
+                except Exception as e:
+                    logger.error(f"Error generating question: {e}", exc_info=True)
+                    await websocket.send_json(ErrorMessage(
+                        message=str(e),
+                        code="GENERATION_ERROR"
+                    ).model_dump())
+
+            elif message_type == "get_completion_status":
+                # Get completion status for call tracking
+                try:
+                    status_data = session.get_completion_status()
+                    status = CompletionStatus(**status_data)
+                    message = CompletionStatusMessage(data=status)
+                    await websocket.send_json(message.model_dump())
+                except Exception as e:
+                    logger.error(f"Error getting completion status: {e}", exc_info=True)
+                    await websocket.send_json(ErrorMessage(
+                        message=str(e),
+                        code="STATUS_ERROR"
+                    ).model_dump())
 
             elif message_type == "end_call":
                 logger.info("End call received, generating summary...")

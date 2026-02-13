@@ -4,7 +4,8 @@ import { useVoiceCall } from "./hooks/useVoiceCall";
 import { PreCallView } from "./components/PreCallView";
 import { InCallView } from "./components/InCallView";
 import { PostCallView } from "./components/PostCallView";
-import { SuggestedQuestion, JobSummary, TranscriptLine, AppPhase, AgentState } from "./types";
+import { CompletionChecklistModal } from "./components/CompletionChecklistModal";
+import { SuggestedQuestion, JobSummary, TranscriptLine, AppPhase, AgentState, CompletionStatus } from "./types";
 import { getApiUrl } from "./utils/api";
 
 function App() {
@@ -26,6 +27,10 @@ function App() {
   const [deepgramApiKey, setDeepgramApiKey] = useState<string>("");
   const [joinUrl, setJoinUrl] = useState<string>("");
 
+  // Completion status modal
+  const [showCompletionModal, setShowCompletionModal] = useState(false);
+  const [completionStatus, setCompletionStatus] = useState<CompletionStatus | null>(null);
+
   const handleSuggestion = useCallback((suggestion: SuggestedQuestion) => {
     setCurrentSuggestion((prev) => {
       // Push old question to history
@@ -45,6 +50,11 @@ function App() {
     setAgentState(state);
   }, []);
 
+  const handleCompletionStatus = useCallback((status: CompletionStatus) => {
+    setCompletionStatus(status);
+    setShowCompletionModal(true);
+  }, []);
+
   const {
     connectionState,
     sendTranscript,
@@ -52,10 +62,13 @@ function App() {
     endCall,
     clearSession,
     reconnect,
+    generateQuestion,
+    getCompletionStatus,
   } = useWebSocket({
     onSuggestion: handleSuggestion,
     onSummary: handleSummary,
     onStateChange: handleStateChange,
+    onCompletionStatus: handleCompletionStatus,
   });
 
   // Notify backend when a new question is displayed
@@ -154,14 +167,25 @@ function App() {
     }
   }, [isVoiceCallActive, phase]);
 
-  // End voice call
+  // Request to end voice call - check completion status first
+  const handleEndVoiceCallRequest = () => {
+    getCompletionStatus();
+  };
+
+  // Actually end the voice call (after modal confirmation)
   const handleEndVoiceCall = () => {
+    setShowCompletionModal(false);
     voiceCall.endCall();
     setIsVoiceCallActive(false);
     endCall();
     // Phase will transition to post-call when summary arrives (handleSummary)
     // Set post-call immediately as fallback (summary may arrive later)
     setPhase("post-call");
+  };
+
+  // Handle continue from modal
+  const handleContinueCall = () => {
+    setShowCompletionModal(false);
   };
 
   // Text mode send (pre-call)
@@ -234,21 +258,30 @@ function App() {
 
     case "in-call":
       return (
-        <InCallView
-          callState={voiceCall.callState}
-          isMuted={voiceCall.isMuted}
-          isRemoteConnected={voiceCall.isRemoteConnected}
-          onToggleMute={voiceCall.toggleMute}
-          onEndCall={handleEndVoiceCall}
-          transcriptLines={transcriptLines}
-          onSaveTranscript={handleSaveTranscript}
-          onClearTranscript={handleClearTranscript}
-          currentSuggestion={currentSuggestion}
-          pastSuggestions={pastSuggestions}
-          agentState={agentState}
-          connectionState={connectionState}
-          joinUrl={joinUrl}
-        />
+        <>
+          <InCallView
+            callState={voiceCall.callState}
+            isMuted={voiceCall.isMuted}
+            isRemoteConnected={voiceCall.isRemoteConnected}
+            onToggleMute={voiceCall.toggleMute}
+            onEndCall={handleEndVoiceCallRequest}
+            transcriptLines={transcriptLines}
+            onSaveTranscript={handleSaveTranscript}
+            onClearTranscript={handleClearTranscript}
+            currentSuggestion={currentSuggestion}
+            pastSuggestions={pastSuggestions}
+            agentState={agentState}
+            connectionState={connectionState}
+            joinUrl={joinUrl}
+            onGenerateQuestion={generateQuestion}
+          />
+          <CompletionChecklistModal
+            isOpen={showCompletionModal}
+            status={completionStatus}
+            onContinue={handleContinueCall}
+            onEndCall={handleEndVoiceCall}
+          />
+        </>
       );
 
     case "post-call":

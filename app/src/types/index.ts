@@ -93,6 +93,14 @@ export interface EndCallMessage {
   type: "end_call";
 }
 
+export interface GenerateQuestionMessage {
+  type: "generate_question";
+}
+
+export interface GetCompletionStatusMessage {
+  type: "get_completion_status";
+}
+
 export interface SuggestionMessage {
   type: "suggestion";
   data: SuggestedQuestion;
@@ -101,6 +109,18 @@ export interface SuggestionMessage {
 export interface SummaryMessage {
   type: "summary";
   data: JobSummary;
+}
+
+export interface CompletionStatus {
+  phase: 1 | 2 | 3;
+  completed_items: string[];
+  missing_items: string[];
+  progress: number;
+}
+
+export interface CompletionStatusMessage {
+  type: "completion_status";
+  data: CompletionStatus;
 }
 
 export interface ErrorMessage {
@@ -121,11 +141,18 @@ export interface StateChangeMessage {
 export type IncomingMessage =
   | SuggestionMessage
   | SummaryMessage
+  | CompletionStatusMessage
   | ErrorMessage
   | ClearedMessage
   | StateChangeMessage;
 
-export type OutgoingMessage = TranscriptMessage | EndCallMessage | { type: "clear" } | { type: "question_shown" };
+export type OutgoingMessage = 
+  | TranscriptMessage 
+  | EndCallMessage 
+  | GenerateQuestionMessage
+  | GetCompletionStatusMessage
+  | { type: "clear" } 
+  | { type: "question_shown" };
 
 // Connection state
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "error";

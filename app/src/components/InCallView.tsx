@@ -5,6 +5,7 @@ import { AnimatedTranscriptLine } from "./TranscriptLine";
 import { CallControls } from "./CallControls";
 import { CoverageTracker } from "./CoverageTracker";
 import { QuestionCard } from "./QuestionCard";
+import { GenerateQuestionButton } from "./GenerateQuestionButton";
 
 interface InCallViewProps {
   // Call state
@@ -31,6 +32,9 @@ interface InCallViewProps {
 
   // Join URL for sharing
   joinUrl?: string;
+
+  // Generate question handler
+  onGenerateQuestion: () => void;
 }
 
 function AgentStateIndicator({ state }: { state: AgentState }) {
@@ -65,6 +69,7 @@ export function InCallView({
   agentState,
   connectionState,
   joinUrl,
+  onGenerateQuestion,
 }: InCallViewProps) {
   const [linkCopied, setLinkCopied] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -322,6 +327,13 @@ export function InCallView({
           </div>
         </div>
       </div>
+
+      {/* Floating Action Button */}
+      <GenerateQuestionButton
+        onGenerateQuestion={onGenerateQuestion}
+        agentState={agentState}
+        callState={callState}
+      />
     </div>
   );
 }

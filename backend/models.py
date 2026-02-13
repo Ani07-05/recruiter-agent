@@ -154,3 +154,17 @@ class ErrorMessage(BaseModel):
     type: str = Field(default="error")
     message: str
     code: Optional[str] = Field(default=None)
+
+
+class CompletionStatus(BaseModel):
+    """Completion status for call tracking."""
+    phase: int = Field(description="Current phase: 1=Business Mapping, 2=Requirements Confirmation, 3=Final Confirmation")
+    completed_items: list[str] = Field(default_factory=list, description="List of completed checklist items")
+    missing_items: list[str] = Field(default_factory=list, description="List of missing checklist items")
+    progress: int = Field(ge=0, le=100, description="Overall progress percentage (0-100)")
+
+
+class CompletionStatusMessage(BaseModel):
+    """Outgoing completion status."""
+    type: str = Field(default="completion_status")
+    data: CompletionStatus

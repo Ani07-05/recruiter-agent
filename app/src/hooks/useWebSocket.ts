@@ -6,6 +6,7 @@ import {
   OutgoingMessage,
   SuggestedQuestion,
   JobSummary,
+  CompletionStatus,
 } from "../types";
 
 // Use relative URL for WebSocket (works with Vite proxy)
@@ -31,6 +32,7 @@ interface UseWebSocketOptions {
   onSummary?: (summary: JobSummary) => void;
   onStateChange?: (state: AgentState) => void;
   onError?: (error: string) => void;
+  onCompletionStatus?: (status: CompletionStatus) => void;
 }
 
 interface UseWebSocketReturn {
@@ -40,6 +42,8 @@ interface UseWebSocketReturn {
   endCall: () => void;
   clearSession: () => void;
   reconnect: () => void;
+  generateQuestion: () => void;
+  getCompletionStatus: () => void;
 }
 
 export function useWebSocket({
@@ -50,6 +54,7 @@ export function useWebSocket({
   onSummary,
   onStateChange,
   onError,
+  onCompletionStatus,
 }: UseWebSocketOptions): UseWebSocketReturn {
   const [connectionState, setConnectionState] =
     useState<ConnectionState>("disconnected");
@@ -95,6 +100,9 @@ export function useWebSocket({
             case "state_change":
               onStateChange?.(message.state);
               break;
+            case "completion_status":
+              onCompletionStatus?.(message.data);
+              break;
             default:
               console.warn("Unknown message type:", message);
           }
@@ -132,7 +140,7 @@ export function useWebSocket({
       console.error("Failed to create WebSocket:", error);
       setConnectionState("error");
     }
-  }, [url, reconnectInterval, maxReconnectAttempts, onSuggestion, onSummary, onStateChange, onError]);
+  }, [url, reconnectInterval, maxReconnectAttempts, onSuggestion, onSummary, onStateChange, onError, onCompletionStatus]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
@@ -183,6 +191,18 @@ export function useWebSocket({
     setTimeout(connect, 100);
   }, [connect, disconnect]);
 
+  const generateQuestion = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "generate_question" }));
+    }
+  }, []);
+
+  const getCompletionStatus = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "get_completion_status" }));
+    }
+  }, []);
+
   // Connect on mount
   useEffect(() => {
     connect();
@@ -198,5 +218,7 @@ export function useWebSocket({
     endCall,
     clearSession,
     reconnect,
+    generateQuestion,
+    getCompletionStatus,
   };
 }
